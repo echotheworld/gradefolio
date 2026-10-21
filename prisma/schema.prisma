@@ -1,0 +1,144 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String          @id @default(cuid())
+  email        String          @unique
+  passwordHash String
+  displayName  String
+  role         String          // "SUPER_ADMIN" | "PROFESSOR"
+  status       String          @default("ACTIVE") // "ACTIVE" | "SUSPENDED"
+  lastSignInAt DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  sections     Section[]
+  imports      ImportHistory[]
+  auditLogs    AuditLog[]
+}
+
+model Section {
+  id                   String           @id @default(uuid())
+  ownerProfessorId     String
+  ownerProfessor       User             @relation(fields: [ownerProfessorId], references: [id], onDelete: Cascade)
+  sectionCode          String           @unique
+  sectionName          String
+  subjectName          String
+  academicYear         String
+  term                 String
+  announcement         String?
+  status               String           @default("DRAFT") // "DRAFT" | "PUBLISHED" | "ARCHIVED"
+  showFinalGrade       Boolean          @default(true)
+  showBreakdown        Boolean          @default(true)
+  showProvisionalNotice Boolean         @default(true)
+  publishedAt          DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  sectionStudents      SectionStudent[]
+  gradeItems           GradeItem[]
+  imports              ImportHistory[]
+}
+
+model Student {
+  id              String           @id @default(uuid())
+  studentNumber   String           @unique
+  displayName     String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  sectionStudents SectionStudent[]
+}
+
+model SectionStudent {
+  id               String        @id @default(uuid())
+  sectionId        String
+  section          Section       @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  studentId        String
+  student          Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  credentialHash   String?
+  credentialStatus String        @default("ACTIVE") // "ACTIVE" | "REVOKED" | "UNISSUED"
+  lastAccessAt     DateTime?
+  finalGrade       String?
+  finalGradeStatus String        @default("PROVISIONAL") // "PROVISIONAL" | "FINAL" | "NOT_RECORDED" | "MISSING"
+  remarks          String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  gradeRecords     GradeRecord[]
+
+  @@unique([sectionId, studentId])
+}
+
+model GradeItem {
+  id           String        @id @default(uuid())
+  sectionId    String
+  section      Section       @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  name         String
+  category     String?
+  maxScore     Float         @default(100)
+  weight       Float?
+  displayOrder Int           @default(0)
+  createdAt    DateTime      @default(now())
+  gradeRecords GradeRecord[]
+}
+
+model GradeRecord {
+  id               String         @id @default(uuid())
+  sectionStudentId String
+  sectionStudent   SectionStudent @relation(fields: [sectionStudentId], references: [id], onDelete: Cascade)
+  gradeItemId      String
+  gradeItem        GradeItem      @relation(fields: [gradeItemId], references: [id], onDelete: Cascade)
+  score            Float?
+  status           String         @default("RECORDED") // "RECORDED" | "NOT_RECORDED" | "MISSING" | "EXCUSED"
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([sectionStudentId, gradeItemId])
+}
+
+model ImportHistory {
+  id           String   @id @default(uuid())
+  sectionId    String
+  section      Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  uploadedById String
+  uploadedBy   User     @relation(fields: [uploadedById], references: [id])
+  fileName     String
+  status       String   // "SUCCESS" | "WARNINGS" | "FAILED"
+  createdCount Int      @default(0)
+  updatedCount Int      @default(0)
+  skippedCount Int      @default(0)
+  errorSummary String?
+  createdAt    DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorEmail String
+  action     String
+  targetType String
+  targetId   String
+  metadata   String?
+  createdAt  DateTime @default(now())
+}
+
+model SystemSetting {
+  id                    String   @id @default("global")
+  institutionName       String   @default("GradeView Academic Portal")
+  supportEmail          String   @default("support@gradeview.edu")
+  maxUploadSizeMb       Int      @default(15)
+  defaultShowFinalGrade Boolean  @default(true)
+  defaultShowBreakdown  Boolean  @default(true)
+  updatedAt             DateTime @updatedAt
+}
+
+model LoginAttempt {
+  id          String    @id @default(cuid())
+  key         String    @unique
+  count       Int       @default(1)
+  lockedUntil DateTime?
+  updatedAt   DateTime  @updatedAt
+}
