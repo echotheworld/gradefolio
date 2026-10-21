@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Lock, ArrowLeft, KeyRound, User, AlertCircle, ShieldCheck, Sparkles } from "lucide-react";
+import { Lock, ArrowLeft, KeyRound, User, AlertCircle, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 
@@ -53,12 +53,6 @@ export default function StudentLoginPage() {
       setError("Network or server error. Please try again.");
       setIsLoading(false);
     }
-  };
-
-  const handleFillDemo = () => {
-    setStudentNumber("2024-00101");
-    setPassword("GV-2024-PASS1");
-    setError("");
   };
 
   return (
@@ -134,20 +128,6 @@ export default function StudentLoginPage() {
               Sign In & View Grades
             </Button>
           </form>
-
-          {/* Quick Demo Pre-fill for evaluator convenience */}
-          {sectionCode === "CS101-2026A" && (
-            <div className="mt-5 pt-4 border-t border-slate-100 text-center">
-              <button
-                type="button"
-                onClick={handleFillDemo}
-                className="inline-flex items-center gap-1.5 text-xs text-teal-700 hover:text-teal-900 font-medium bg-teal-50 hover:bg-teal-100 px-3 py-1.5 rounded-md border border-teal-200 transition-colors"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-teal-600" />
-                <span>Fill Demo Credentials (Juan Dela Cruz)</span>
-              </button>
-            </div>
-          )}
 
           <div className="mt-6 pt-4 border-t border-slate-100 text-center">
             <p className="text-xs text-slate-500">

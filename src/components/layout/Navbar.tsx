@@ -9,13 +9,10 @@ import {
   User,
   ShieldCheck,
   ChevronDown,
-  Sparkles,
   BookOpen,
   FileSpreadsheet,
-  Users,
   Settings,
-  History,
-  KeyRound,
+  Lock,
 } from "lucide-react";
 import { Button } from "../ui/Button";
 
@@ -35,7 +32,6 @@ interface NavbarProps {
 export function Navbar({ user, studentSession }: NavbarProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const [demoMenuOpen, setDemoMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
   const handleSignOut = async () => {
@@ -43,24 +39,6 @@ export function Navbar({ user, studentSession }: NavbarProps) {
       await fetch("/api/auth/signout", { method: "POST" });
       router.push("/");
       router.refresh();
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleQuickDemoSwitch = async (role: "admin" | "prof" | "student") => {
-    setDemoMenuOpen(false);
-    try {
-      const res = await fetch("/api/auth/demo-switch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role }),
-      });
-      const data = await res.json();
-      if (data.redirect) {
-        router.push(data.redirect);
-        router.refresh();
-      }
     } catch (e) {
       console.error(e);
     }
@@ -85,7 +63,7 @@ export function Navbar({ user, studentSession }: NavbarProps) {
                   GradeView
                 </span>
                 <span className="text-[10px] text-slate-500 font-medium tracking-wider uppercase mt-0.5">
-                  Academic Portal
+                  Academic Grade Portal
                 </span>
               </div>
             </Link>
@@ -185,29 +163,23 @@ export function Navbar({ user, studentSession }: NavbarProps) {
               {!isAdmin && !isProfessor && !isStudent && (
                 <>
                   <Link
-                    href="/#lookup"
+                    href="/"
                     className="px-3 py-1.5 rounded-md text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
                   >
-                    Enter Section Code
-                  </Link>
-                  <Link
-                    href="/#how-it-works"
-                    className="px-3 py-1.5 rounded-md text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
-                  >
-                    How It Works
+                    Student Grade Access
                   </Link>
                   <Link
                     href="/#privacy"
                     className="px-3 py-1.5 rounded-md text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
                   >
-                    Privacy Promise
+                    Data Privacy (RA 10173)
                   </Link>
                 </>
               )}
 
               {isStudent && (
                 <div className="flex items-center gap-2 text-xs text-slate-600 bg-slate-100 px-3 py-1 rounded-md">
-                  <span className="font-semibold text-slate-900">Section:</span>
+                  <span className="font-semibold text-slate-900">Enrolled Section:</span>
                   <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200">
                     {studentSession.sectionCode}
                   </span>
@@ -216,63 +188,8 @@ export function Navbar({ user, studentSession }: NavbarProps) {
             </nav>
           </div>
 
-          {/* Right actions: Demo Quick-Switch & Auth status */}
+          {/* Right actions: User menu or Staff MIS Link */}
           <div className="flex items-center gap-3">
-            {/* Quick Demo Switcher for convenience during testing */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setDemoMenuOpen(!demoMenuOpen)}
-                className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md bg-teal-50 text-teal-800 border border-teal-200/80 hover:bg-teal-100 transition-colors"
-                title="Quickly switch between Super Admin, Professor, or Student test accounts"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-teal-600" />
-                <span>Quick Role Demo</span>
-                <ChevronDown className="w-3 h-3 ml-0.5" />
-              </button>
-
-              {demoMenuOpen && (
-                <div className="absolute right-0 mt-2 w-64 rounded-lg bg-white border border-slate-200 shadow-xl py-2 z-50 text-xs">
-                  <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-100 mb-1">
-                    Instant Role Switcher
-                  </div>
-                  <button
-                    onClick={() => handleQuickDemoSwitch("admin")}
-                    className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-start gap-2.5 transition-colors"
-                  >
-                    <ShieldCheck className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
-                    <div>
-                      <div className="font-medium text-slate-900">Super Admin</div>
-                      <div className="text-[11px] text-slate-500">Dr. Eleanor Vance (Platform owner)</div>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={() => handleQuickDemoSwitch("prof")}
-                    className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-start gap-2.5 transition-colors"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
-                    <div>
-                      <div className="font-medium text-slate-900">Professor (CS Dept)</div>
-                      <div className="text-[11px] text-slate-500">Prof. Alan Reyes (CS101, CS201)</div>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={() => handleQuickDemoSwitch("student")}
-                    className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-start gap-2.5 transition-colors"
-                  >
-                    <GraduationCap className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-                    <div>
-                      <div className="font-medium text-slate-900">Student Portal</div>
-                      <div className="text-[11px] text-slate-500">Juan Dela Cruz (CS101-2026A)</div>
-                    </div>
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* User status */}
             {user ? (
               <div className="relative">
                 <button
@@ -295,7 +212,7 @@ export function Navbar({ user, studentSession }: NavbarProps) {
                       <div className="text-[11px] text-slate-500 truncate">{user.email}</div>
                       <div className="mt-1">
                         <span className="inline-block px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded bg-slate-100 text-slate-700">
-                          {user.role === "SUPER_ADMIN" ? "Super Admin" : "Professor"}
+                          {user.role === "SUPER_ADMIN" ? "Super Admin" : "Faculty / Professor"}
                         </span>
                       </div>
                     </div>
@@ -340,13 +257,12 @@ export function Navbar({ user, studentSession }: NavbarProps) {
                 </Button>
               </div>
             ) : (
-              <div className="flex items-center gap-2">
-                <Link href="/auth/login">
-                  <Button variant="outline" size="sm">
-                    Professor / Admin Sign In
-                  </Button>
-                </Link>
-              </div>
+              <Link href="/admin_mis">
+                <Button variant="outline" size="sm" className="text-xs gap-1.5 border-slate-300 hover:bg-slate-100 text-slate-700">
+                  <Lock className="w-3 h-3 text-slate-500" />
+                  <span>MIS Portal</span>
+                </Button>
+              </Link>
             )}
           </div>
         </div>
