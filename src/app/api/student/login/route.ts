@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, createStudentSession } from "@/lib/auth";
 import { checkRateLimit, recordFailedAttempt, clearRateLimit } from "@/lib/rate-limit";
+import { serverCache } from "@/lib/server-cache";
 
 export async function POST(request: Request) {
   try {
@@ -29,10 +30,16 @@ export async function POST(request: Request) {
       );
     }
 
-    // 2. Validate section
-    const section = await prisma.section.findUnique({
-      where: { sectionCode: cleanSectionCode },
-    });
+    // 2. Validate section (with Server-Side Micro-Cache to protect Supabase connection pool)
+    const secCacheKey = `sec_meta_${cleanSectionCode}`;
+    let section = serverCache.get<{ id: string; sectionCode: string; status: string }>(secCacheKey);
+    if (!section) {
+      section = await prisma.section.findUnique({
+        where: { sectionCode: cleanSectionCode },
+        select: { id: true, sectionCode: true, status: true },
+      });
+      if (section) serverCache.set(secCacheKey, section, 30);
+    }
 
     if (!section) {
       // Use generic error to avoid revealing section existence
@@ -56,6 +63,7 @@ export async function POST(request: Request) {
     // 3. Find student
     const student = await prisma.student.findUnique({
       where: { studentNumber: cleanStudentNumber },
+      select: { id: true, studentNumber: true, displayName: true },
     });
 
     if (!student) {
@@ -66,13 +74,19 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. Find section enrollment
+    // 4. Find section enrollment (fetch snapshot in same query to pipeline report)
     const enrollment = await prisma.sectionStudent.findUnique({
       where: {
         sectionId_studentId: {
           sectionId: section.id,
           studentId: student.id,
         },
+      },
+      select: {
+        id: true,
+        credentialHash: true,
+        credentialStatus: true,
+        publishedSnapshot: true,
       },
     });
 
@@ -94,12 +108,12 @@ export async function POST(request: Request) {
       );
     }
 
-    // Success: clear rate limit, update lastAccessAt
+    // Success: clear rate limit, update lastAccessAt in background (zero blocking latency)
     await clearRateLimit(rateLimitKey);
-    await prisma.sectionStudent.update({
+    prisma.sectionStudent.update({
       where: { id: enrollment.id },
       data: { lastAccessAt: new Date() },
-    });
+    }).catch((err) => console.error("Non-blocking lastAccessAt update error:", err));
 
     // Create student session
     await createStudentSession({
@@ -111,9 +125,23 @@ export async function POST(request: Request) {
       displayName: student.displayName,
     });
 
+    // Pipeline report snapshot directly into response and Server Micro-Cache for 0ms page load
+    let pipelinedReport: any = null;
+    if (enrollment.publishedSnapshot) {
+      try {
+        pipelinedReport = typeof enrollment.publishedSnapshot === "string"
+          ? JSON.parse(enrollment.publishedSnapshot)
+          : enrollment.publishedSnapshot;
+        serverCache.set(`student_report_${enrollment.id}`, pipelinedReport, 180);
+      } catch (e) {
+        console.error("Report pipeline parse error:", e);
+      }
+    }
+
     return NextResponse.json({
       success: true,
       redirect: `/section/${section.sectionCode}/grades`,
+      report: pipelinedReport,
     });
   } catch (error) {
     console.error("Student login error:", error);

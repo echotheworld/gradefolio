@@ -23,6 +23,8 @@ yarn-debug.log*
 yarn-error.log*
 
 # local env files
+.env
+.env.*
 .env*.local
 
 # vercel
@@ -35,3 +37,7 @@ next-env.d.ts
 # database
 *.db
 *.db-journal
+
+# local storage
+storage/
+/storage

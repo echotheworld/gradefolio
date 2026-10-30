@@ -2,7 +2,7 @@ import React from "react";
 import { cn } from "@/lib/utils";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: "primary" | "secondary" | "outline" | "destructive" | "ghost" | "link";
+  variant?: "primary" | "secondary" | "gold" | "outline" | "destructive" | "ghost" | "link";
   size?: "sm" | "md" | "lg";
   isLoading?: boolean;
 }
@@ -10,15 +10,16 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = "primary", size = "md", isLoading, children, disabled, ...props }, ref) => {
     const baseStyles =
-      "inline-flex items-center justify-center font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none rounded-md";
+      "inline-flex items-center justify-center font-semibold tracking-tight transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none rounded-xl active:scale-[0.98]";
 
     const variants = {
-      primary: "bg-slate-900 text-white hover:bg-slate-800 focus-visible:ring-slate-900 shadow-sm",
-      secondary: "bg-slate-100 text-slate-900 hover:bg-slate-200 focus-visible:ring-slate-400",
-      outline: "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 focus-visible:ring-slate-400",
-      destructive: "bg-rose-600 text-white hover:bg-rose-700 focus-visible:ring-rose-500 shadow-sm",
-      ghost: "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
-      link: "text-teal-700 underline-offset-4 hover:underline p-0 h-auto",
+      primary: "bg-[#2563EB] text-white hover:bg-[#1D4ED8] border border-blue-700/20 focus-visible:ring-[#2563EB] shadow-xs",
+      secondary: "bg-slate-900 text-white hover:bg-slate-800 border border-slate-700 focus-visible:ring-slate-900 shadow-xs",
+      gold: "bg-[#FBBF24] text-amber-950 hover:bg-[#F59E0B] border border-amber-300 shadow-xs focus-visible:ring-[#FBBF24]",
+      outline: "border border-slate-200/90 bg-white text-slate-800 hover:border-slate-300 hover:bg-slate-50 focus-visible:ring-[#2563EB] shadow-2xs",
+      destructive: "bg-rose-600 text-white hover:bg-rose-700 focus-visible:ring-rose-500 shadow-xs",
+      ghost: "text-slate-700 hover:bg-slate-100 hover:text-slate-900",
+      link: "text-[#2563EB] underline-offset-4 hover:underline p-0 h-auto hover:text-[#1D4ED8]",
     };
 
     const sizes = {

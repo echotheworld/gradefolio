@@ -17,11 +17,14 @@ export function formatDate(date: Date | string | null | undefined): string {
   });
 }
 
-export function generateRandomCode(prefix: string = "GV", length: number = 6): string {
+export function generateRandomCode(prefix: string = "", length: number = 6): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let result = "";
   for (let i = 0; i < length; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  if (!prefix) {
+    return `${result.slice(0, 3)}-${result.slice(3)}`;
   }
   return `${prefix}-${result.slice(0, 3)}-${result.slice(3)}`;
 }

@@ -45,7 +45,14 @@ export async function GET(request: Request, { params }: RouteParams) {
       lastAccessAt: ss.lastAccessAt,
     }));
 
-    return NextResponse.json({ students, sectionCode: section.sectionCode });
+    return NextResponse.json(
+      { students, sectionCode: section.sectionCode, sectionName: section.sectionName },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=5, stale-while-revalidate=30",
+        },
+      }
+    );
   } catch (error) {
     console.error("Fetch credentials error:", error);
     return NextResponse.json({ error: "Failed to fetch student credentials" }, { status: 500 });

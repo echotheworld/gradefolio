@@ -37,12 +37,16 @@ model Section {
   showFinalGrade       Boolean          @default(true)
   showBreakdown        Boolean          @default(true)
   showProvisionalNotice Boolean         @default(true)
+  publishedPeriod      String           @default("ALL") // "MIDTERMS" | "FINALS" | "ALL"
+  weightConfig         String?
   publishedAt          DateTime?
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
   sectionStudents      SectionStudent[]
   gradeItems           GradeItem[]
   imports              ImportHistory[]
+
+  @@index([ownerProfessorId])
 }
 
 model Student {
@@ -66,11 +70,13 @@ model SectionStudent {
   finalGrade       String?
   finalGradeStatus String        @default("PROVISIONAL") // "PROVISIONAL" | "FINAL" | "NOT_RECORDED" | "MISSING"
   remarks          String?
+  publishedSnapshot String?      @db.Text
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
   gradeRecords     GradeRecord[]
 
   @@unique([sectionId, studentId])
+  @@index([studentId])
 }
 
 model GradeItem {
@@ -84,6 +90,8 @@ model GradeItem {
   displayOrder Int           @default(0)
   createdAt    DateTime      @default(now())
   gradeRecords GradeRecord[]
+
+  @@index([sectionId])
 }
 
 model GradeRecord {
@@ -97,6 +105,7 @@ model GradeRecord {
   updatedAt        DateTime       @updatedAt
 
   @@unique([sectionStudentId, gradeItemId])
+  @@index([gradeItemId])
 }
 
 model ImportHistory {
@@ -112,6 +121,9 @@ model ImportHistory {
   skippedCount Int      @default(0)
   errorSummary String?
   createdAt    DateTime @default(now())
+
+  @@index([sectionId])
+  @@index([uploadedById])
 }
 
 model AuditLog {
@@ -124,6 +136,8 @@ model AuditLog {
   targetId   String
   metadata   String?
   createdAt  DateTime @default(now())
+
+  @@index([actorId])
 }
 
 model SystemSetting {

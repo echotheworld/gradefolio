@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import * as XLSX from "xlsx";
@@ -9,18 +9,26 @@ import {
   FileSpreadsheet,
   CheckCircle2,
   AlertTriangle,
-  ArrowRight,
   ArrowLeft,
   AlertCircle,
   Download,
   Info,
-  Check,
+  Sparkles,
   RefreshCw,
   FolderOpen,
+  Check,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/Card";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
+import { StatusChip } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
+import {
+  isClassRecordTemplate,
+  parseClassRecordTemplate,
+  calculateGradeEquivalent,
+  ClassRecordParseResult,
+} from "@/lib/class-record-parser";
 
 interface ValidationIssue {
   row: number;
@@ -36,38 +44,23 @@ export default function ImportGradebookWizard() {
   const { toast } = useToast();
   const sectionId = params.id as string;
 
-  const [currentStep, setCurrentStep] = useState(1);
-  const [section, setSection] = useState<{ id: string; sectionCode: string; subjectName: string } | null>(null);
+  // Streamlined 2-Step Flow:
+  // Step 1: Upload Worksheet
+  // Step 2: Validate Data & Save as Draft -> Boom!
+  const [currentStep, setCurrentStep] = useState<1 | 2>(1);
+  const [section, setSection] = useState<{ id: string; sectionName: string; sectionCode: string; subjectName: string } | null>(null);
 
-  // Step 1: File state
+  // File & Parser State
   const [file, setFile] = useState<File | null>(null);
-  const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
-  const [sheetNames, setSheetNames] = useState<string[]>([]);
-  const [selectedSheet, setSelectedSheet] = useState<string>("");
-
-  // Step 2: Raw sheet data & header selection
-  const [rawRows, setRawRows] = useState<any[][]>([]);
-  const [headerRowIndex, setHeaderRowIndex] = useState<number>(0);
-
-  // Step 3: Column Mapping
-  const [headers, setHeaders] = useState<string[]>([]);
-  const [studentIdCol, setStudentIdCol] = useState<string>("");
-  const [studentNameCol, setStudentNameCol] = useState<string>("");
-  const [finalGradeCol, setFinalGradeCol] = useState<string>("");
-  const [assessmentCols, setAssessmentCols] = useState<Array<{ name: string; maxScore: number }>>([]);
-
-  // Step 4: Validation
-  const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([]);
-  const [hasErrors, setHasErrors] = useState<boolean>(false);
-  const [formulaWarning, setFormulaWarning] = useState<boolean>(false);
-
-  // Step 5 & 6: Import preview & results
-  const [importSummary, setImportSummary] = useState<{
-    created: number;
-    updated: number;
-    skipped: number;
-  } | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Parsed Data & Validation
+  const [parsedData, setParsedData] = useState<ClassRecordParseResult | null>(null);
+  const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([]);
+  const [hasErrors, setHasErrors] = useState(false);
 
   // Load section info
   useEffect(() => {
@@ -77,230 +70,145 @@ export default function ImportGradebookWizard() {
         if (data.section) {
           setSection({
             id: data.section.id,
+            sectionName: data.section.sectionName || data.section.sectionCode,
             sectionCode: data.section.sectionCode,
             subjectName: data.section.subjectName,
           });
         }
-      });
+      })
+      .catch((err) => console.error("Error loading section:", err));
   }, [sectionId]);
 
-  // Step 1: Process file upload
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = e.target.files?.[0];
-    if (!selected) return;
-
-    if (selected.size > 15 * 1024 * 1024) {
+  // Execute high-precision parsing & validation
+  const processSpreadsheet = (selectedFile: File) => {
+    if (selectedFile.size > 15 * 1024 * 1024) {
       toast({ type: "error", title: "File Too Large", message: "Maximum file size is 15MB." });
       return;
     }
 
-    setFile(selected);
+    setIsProcessing(true);
+    setFile(selectedFile);
+
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: "binary", cellFormula: true, cellDates: true });
-        setWorkbook(wb);
-        setSheetNames(wb.SheetNames);
-        if (wb.SheetNames.length > 0) {
-          setSelectedSheet(wb.SheetNames[0]);
-          parseSheetData(wb, wb.SheetNames[0]);
+        const buffer = evt.target?.result as ArrayBuffer;
+        if (!buffer || buffer.byteLength === 0) {
+          throw new Error("The selected file is empty.");
         }
-      } catch (err: any) {
-        toast({ type: "error", title: "Invalid File", message: "Failed to parse spreadsheet: " + err.message });
-      }
-    };
-    reader.readAsBinaryString(selected);
-  };
 
-  // Helper to load sample files
-  const handleLoadSample = async (samplePath: string, filename: string) => {
-    try {
-      const res = await fetch(samplePath);
-      const blob = await res.blob();
-      const sampleFile = new File([blob], filename, {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      });
-
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: "binary", cellFormula: true });
-        setFile(sampleFile);
-        setWorkbook(wb);
-        setSheetNames(wb.SheetNames);
-        if (wb.SheetNames.length > 0) {
-          setSelectedSheet(wb.SheetNames[0]);
-          parseSheetData(wb, wb.SheetNames[0]);
+        const wb = XLSX.read(buffer, { type: "array", cellFormula: true, cellDates: true });
+        if (!wb.SheetNames || wb.SheetNames.length === 0) {
+          throw new Error("Workbook contains no readable worksheets.");
         }
-        toast({ type: "info", title: "Sample Loaded", message: `Loaded ${filename} for testing.` });
-      };
-      reader.readAsBinaryString(sampleFile);
-    } catch {
-      toast({ type: "error", title: "Error", message: "Failed to load sample sheet" });
-    }
-  };
 
-  // Parse raw sheet data
-  const parseSheetData = (wb: XLSX.WorkBook, sheetName: string) => {
-    const ws = wb.Sheets[sheetName];
-    if (!ws) return;
-
-    // Check for formula cells
-    let hasFormulas = false;
-    for (const cell in ws) {
-      if (ws[cell] && typeof ws[cell] === "object" && ws[cell].f) {
-        hasFormulas = true;
-        break;
-      }
-    }
-    setFormulaWarning(hasFormulas);
-
-    const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false });
-    setRawRows(rows);
-
-    // Auto-detect header row (first non-empty row)
-    const headerIdx = rows.findIndex((r) => r && r.length > 0 && r.some((c) => c !== undefined && c !== ""));
-    setHeaderRowIndex(headerIdx >= 0 ? headerIdx : 0);
-  };
-
-  const handleSheetChange = (sheetName: string) => {
-    setSelectedSheet(sheetName);
-    if (workbook) parseSheetData(workbook, sheetName);
-  };
-
-  // Step 2 -> Step 3: Confirm header row & auto-detect mapping
-  const proceedToMapping = () => {
-    if (!rawRows[headerRowIndex]) {
-      toast({ type: "error", title: "Header Error", message: "Please select a valid header row." });
-      return;
-    }
-
-    const detectedHeaders = rawRows[headerRowIndex].map((h: any) => String(h || "").trim());
-    setHeaders(detectedHeaders);
-
-    // Smart auto-detection for column mappings
-    let foundId = "";
-    let foundName = "";
-    let foundFinal = "";
-    const assessments: Array<{ name: string; maxScore: number }> = [];
-
-    detectedHeaders.forEach((h) => {
-      const lower = h.toLowerCase();
-      if (!foundId && (lower.includes("student id") || lower.includes("student number") || lower === "id" || lower === "sn")) {
-        foundId = h;
-      } else if (!foundName && (lower.includes("name") || lower.includes("student name"))) {
-        foundName = h;
-      } else if (!foundFinal && (lower.includes("final") || lower.includes("grade") || lower.includes("average") || lower.includes("total"))) {
-        foundFinal = h;
-      } else if (h.length > 0) {
-        // Assume other columns are assessment columns
-        // Try to parse max score in parentheses, e.g. "Quiz 1 (50)"
-        let maxScore = 100;
-        const match = h.match(/\((\d+)\)/);
-        if (match) {
-          maxScore = parseInt(match[1], 10);
-        }
-        assessments.push({ name: h, maxScore });
-      }
-    });
-
-    setStudentIdCol(foundId);
-    setStudentNameCol(foundName);
-    setFinalGradeCol(foundFinal);
-    setAssessmentCols(assessments);
-
-    setCurrentStep(3);
-  };
-
-  // Step 3 -> Step 4: Run Validation Engine
-  const proceedToValidation = () => {
-    if (!studentIdCol) {
-      toast({
-        type: "error",
-        title: "Required Mapping Missing",
-        message: "You must map the Student ID column to proceed.",
-      });
-      return;
-    }
-
-    const idColIdx = headers.indexOf(studentIdCol);
-    const nameColIdx = studentNameCol ? headers.indexOf(studentNameCol) : -1;
-    const finalColIdx = finalGradeCol ? headers.indexOf(finalGradeCol) : -1;
-
-    const dataRows = rawRows.slice(headerRowIndex + 1);
-    const issues: ValidationIssue[] = [];
-    const seenIds = new Set<string>();
-
-    dataRows.forEach((row, idx) => {
-      const rowNum = headerRowIndex + 2 + idx;
-      if (!row || row.length === 0 || row.every((c) => !c)) return; // Ignore blank rows
-
-      const idVal = row[idColIdx] ? String(row[idColIdx]).trim() : "";
-
-      // 1. Missing Student ID
-      if (!idVal) {
-        issues.push({
-          row: rowNum,
-          type: "error",
-          field: "Student ID",
-          message: "Missing Student ID. Row will be skipped.",
-          value: "Empty",
-        });
-      } else {
-        // 2. Duplicate Student ID
-        if (seenIds.has(idVal)) {
-          issues.push({
-            row: rowNum,
-            type: "error",
-            field: "Student ID",
-            message: `Duplicate Student ID '${idVal}' found. Later row will overwrite earlier row.`,
-            value: idVal,
-          });
-        }
-        seenIds.add(idVal);
-      }
-
-      // 3. Assessment score range & type checks
-      assessmentCols.forEach((ass) => {
-        const colIdx = headers.indexOf(ass.name);
-        if (colIdx >= 0) {
-          const rawScore = row[colIdx];
-          if (rawScore !== undefined && rawScore !== null && String(rawScore).trim() !== "") {
-            const num = Number(rawScore);
-            if (isNaN(num)) {
-              issues.push({
-                row: rowNum,
-                type: "warning",
-                field: ass.name,
-                message: `Non-numeric value '${rawScore}' detected. Will be marked as NOT_RECORDED.`,
-                value: rawScore,
-              });
-            } else if (num < 0 || num > ass.maxScore) {
-              issues.push({
-                row: rowNum,
-                type: "warning",
-                field: ass.name,
-                message: `Score ${num} exceeds configured max score (${ass.maxScore}).`,
-                value: num,
-              });
-            }
+        // Target 'Input Here' or first sheet
+        let activeSheet = wb.Sheets["Input Here"] || wb.Sheets[wb.SheetNames[0]];
+        for (const sName of wb.SheetNames) {
+          if (isClassRecordTemplate(wb.Sheets[sName], wb)) {
+            activeSheet = wb.Sheets[sName];
+            break;
           }
         }
-      });
-    });
 
-    setValidationIssues(issues);
-    setHasErrors(issues.some((i) => i.type === "error"));
-    setCurrentStep(4);
+        const result = parseClassRecordTemplate(activeSheet, wb);
+        setParsedData(result);
+
+        // Run comprehensive validation
+        const issues: ValidationIssue[] = [];
+        const seenIds = new Set<string>();
+
+        result.students.forEach((st, idx) => {
+          const rowNum = 13 + idx;
+          if (!st.studentNumber) {
+            issues.push({
+              row: rowNum,
+              type: "error",
+              field: "Student ID",
+              message: "Missing student ID number.",
+              value: st.displayName,
+            });
+          } else if (seenIds.has(st.studentNumber)) {
+            issues.push({
+              row: rowNum,
+              type: "warning",
+              field: "Student ID",
+              message: `Duplicate student ID detected: ${st.studentNumber}`,
+              value: st.studentNumber,
+            });
+          } else {
+            seenIds.add(st.studentNumber);
+          }
+
+          if (!st.displayName) {
+            issues.push({
+              row: rowNum,
+              type: "warning",
+              field: "Student Name",
+              message: "Student name is blank.",
+              value: st.studentNumber,
+            });
+          }
+        });
+
+        setValidationIssues(issues);
+        setHasErrors(issues.some((i) => i.type === "error"));
+        setCurrentStep(2);
+
+        toast({
+          type: "success",
+          title: "Workbook Parsed & Validated",
+          message: `Detected ${result.students.length} students and ${result.assessmentItems.length} active assessment columns.`,
+        });
+      } catch (err: any) {
+        console.error("Spreadsheet parse error:", err);
+        toast({
+          type: "error",
+          title: "Parse Error",
+          message: err.message || "Failed to parse workbook.",
+        });
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+
+    reader.onerror = () => {
+      setIsProcessing(false);
+      toast({ type: "error", title: "Read Error", message: "Failed to read the file." });
+    };
+
+    reader.readAsArrayBuffer(selectedFile);
   };
 
-  // Download validation error report as CSV
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0];
+    if (selected) {
+      processSpreadsheet(selected);
+      e.target.value = "";
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const dropped = e.dataTransfer.files?.[0];
+    if (dropped) {
+      processSpreadsheet(dropped);
+    }
+  };
+
+  // Export validation report as CSV
   const handleDownloadErrorReport = () => {
     if (validationIssues.length === 0) return;
     const csvRows = [
       ["Row Number", "Issue Severity", "Field Name", "Detected Value", "Description"],
-      ...validationIssues.map((iss) => [iss.row, iss.type.toUpperCase(), iss.field, `"${iss.value}"`, `"${iss.message}"`]),
+      ...validationIssues.map((iss) => [
+        iss.row,
+        iss.type.toUpperCase(),
+        iss.field,
+        `"${iss.value || ""}"`,
+        `"${iss.message}"`,
+      ]),
     ];
     const csvContent = csvRows.map((r) => r.join(",")).join("\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
@@ -311,54 +219,123 @@ export default function ImportGradebookWizard() {
     a.click();
   };
 
-  // Step 5: Prepare payload
-  const getPreparedPayload = () => {
-    const idColIdx = headers.indexOf(studentIdCol);
-    const nameColIdx = studentNameCol ? headers.indexOf(studentNameCol) : -1;
-    const finalColIdx = finalGradeCol ? headers.indexOf(finalGradeCol) : -1;
+  // Save as Draft (Boom!)
+  const handleSaveAsDraft = async () => {
+    if (!parsedData || parsedData.students.length === 0) {
+      toast({ type: "error", title: "No Data", message: "No valid students to import." });
+      return;
+    }
 
-    const dataRows = rawRows.slice(headerRowIndex + 1);
-    const rowsPayload: any[] = [];
-
-    dataRows.forEach((row) => {
-      if (!row || row.length === 0 || row.every((c) => !c)) return;
-      const studentNumber = row[idColIdx] ? String(row[idColIdx]).trim() : "";
-      if (!studentNumber) return; // skip missing ID
-
-      const displayName = nameColIdx >= 0 && row[nameColIdx] ? String(row[nameColIdx]).trim() : `Student ${studentNumber}`;
-      const finalGrade = finalColIdx >= 0 && row[finalColIdx] ? String(row[finalColIdx]).trim() : null;
-
-      const scores: Record<string, number | null> = {};
-      assessmentCols.forEach((ass) => {
-        const colIdx = headers.indexOf(ass.name);
-        if (colIdx >= 0) {
-          const rawScore = row[colIdx];
-          const num = Number(rawScore);
-          scores[ass.name] = !isNaN(num) && rawScore !== undefined && rawScore !== "" ? num : null;
-        }
-      });
-
-      rowsPayload.push({
-        studentNumber,
-        displayName,
-        finalGrade,
-        scores,
-      });
-    });
-
-    return {
-      fileName: file?.name || "gradebook.xlsx",
-      gradeItems: assessmentCols,
-      rows: rowsPayload,
-      errorSummary: validationIssues.length > 0 ? `${validationIssues.length} warnings/errors detected` : null,
-    };
-  };
-
-  // Step 6: Commit import to DB
-  const handleCommitImport = async () => {
     setIsSaving(true);
     try {
-      const payload = getPreparedPayload();
+      let fileBase64: string | null = null;
+      if (file) {
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          const bytes = new Uint8Array(arrayBuffer);
+          let binary = "";
+          const len = bytes.byteLength;
+          for (let i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          fileBase64 = btoa(binary);
+        } catch (err) {
+          console.error("Failed to encode uploaded file:", err);
+        }
+      }
+
+      const payload = {
+        fileName: file?.name || "class_record_template.xlsx",
+        fileBase64,
+        gradeItems: parsedData.assessmentItems.map((ass) => {
+          let categoryWithPeriod: string = ass.category;
+          if (ass.category === "Class Participation") {
+            categoryWithPeriod =
+              ass.period === "Midterms"
+                ? "Class Participation - Midterms (Week 1 to Week 7)"
+                : "Class Participation - Post Midterms (Week 8 to Week 13)";
+          } else if (ass.category === "Enabling Assessment") {
+            categoryWithPeriod =
+              ass.period === "Midterms"
+                ? "Enabling Activities - Midterms (Week 1 to Week 7)"
+                : "Enabling Activities - Post Midterms (Week 8 to Week 13)";
+          }
+          return {
+            name: ass.name,
+            category: categoryWithPeriod,
+            maxScore: ass.hps > 0 ? ass.hps : 100,
+          };
+        }),
+        rows: parsedData.students.map((st) => {
+          const R_MSG = "Grade is unavaible to view. Kindly contact your professor for this matter. ";
+
+          const isR = (eq: string | null, pct: number | null) => {
+            if (eq) {
+              const s = eq.trim().toUpperCase();
+              if (
+                s === "R" ||
+                s === "REPEAT" ||
+                s.startsWith("R ") ||
+                s.startsWith("R(") ||
+                s.startsWith("R-") ||
+                s.includes("KINDLY CONTACT") ||
+                s.includes("UNAVAILABLE") ||
+                s.includes("UNAVAIBLE")
+              ) {
+                return true;
+              }
+            }
+            if (pct !== null && pct !== undefined && !isNaN(pct) && pct < 60) return true;
+            return false;
+          };
+
+          const formatR = (pct: number | null) => {
+            if (pct !== null && pct !== undefined && !isNaN(pct)) {
+              return `R (${pct.toFixed(2)}%)`;
+            }
+            return "R";
+          };
+
+          const midStr = isR(st.midtermEquivalent, st.midtermPercentage)
+            ? formatR(st.midtermPercentage)
+            : st.midtermEquivalent && st.midtermPercentage !== null
+            ? `${st.midtermEquivalent} (${st.midtermPercentage}%)`
+            : st.midtermPercentage !== null
+            ? (st.midtermPercentage < 60 ? formatR(st.midtermPercentage) : `${calculateGradeEquivalent(st.midtermPercentage)} (${st.midtermPercentage}%)`)
+            : (st.midtermEquivalent || null);
+
+          const finStr = isR(st.finalEquivalent, st.finalPercentage)
+            ? formatR(st.finalPercentage)
+            : st.finalEquivalent && st.finalPercentage !== null
+            ? `${st.finalEquivalent} (${st.finalPercentage}%)`
+            : st.finalPercentage !== null
+            ? (st.finalPercentage < 60 ? formatR(st.finalPercentage) : `${calculateGradeEquivalent(st.finalPercentage)} (${st.finalPercentage}%)`)
+            : (st.finalEquivalent || null);
+
+          const remarksParts: string[] = [];
+          if (midStr) {
+            remarksParts.push(`Midterm: ${midStr}`);
+          }
+          if (st.remarks && !isR(st.remarks, null)) {
+            remarksParts.push(st.remarks);
+          }
+          const remarksStr = remarksParts.length > 0 ? remarksParts.join(" | ") : null;
+
+          return {
+            studentNumber: st.studentNumber,
+            displayName: st.displayName,
+            finalGrade: finStr,
+            midtermGrade: midStr,
+            remarks: remarksStr,
+            scores: st.scores,
+          };
+        }),
+        errorSummary:
+          validationIssues.length > 0
+            ? `${validationIssues.length} warnings/notices detected`
+            : null,
+      };
+
       const res = await fetch(`/api/professor/sections/${sectionId}/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -368,38 +345,25 @@ export default function ImportGradebookWizard() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to commit import.");
 
-      setImportSummary({
-        created: data.createdCount,
-        updated: data.updatedCount,
-        skipped: data.skippedCount,
-      });
-
       toast({
         type: "success",
-        title: "Import Saved as Draft",
-        message: `Successfully processed ${payload.rows.length} records. Section remains in draft until published.`,
+        title: "Boom! Section Saved as Draft",
+        message: `Successfully imported ${data.createdCount + data.updatedCount} student records with ${data.totalGradeRecords || 0} scores.`,
       });
 
-      setCurrentStep(6);
+      // Redirect immediately to section dashboard
+      router.push(`/professor/sections/${sectionId}`);
+      router.refresh();
     } catch (err: any) {
+      console.error("Save as draft error:", err);
       toast({ type: "error", title: "Import Failed", message: err.message });
-    } finally {
       setIsSaving(false);
     }
   };
 
-  const steps = [
-    "Upload",
-    "Select Sheet & Header",
-    "Map Columns",
-    "Validate Data",
-    "Review Changes",
-    "Saved as Draft",
-  ];
-
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-      {/* Back button */}
+      {/* Navigation Header */}
       <div>
         <Link
           href={`/professor/sections/${sectionId}`}
@@ -410,577 +374,394 @@ export default function ImportGradebookWizard() {
         </Link>
       </div>
 
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-slate-200">
+      {/* Main Title Banner */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200">
         <div>
-          <span className="text-xs font-semibold text-teal-700 uppercase tracking-wider">
-            6-Step Guided Import Wizard
+          <span className="text-[11px] font-bold text-blue-700 uppercase tracking-wider">
+            Fast Streamlined Importer
           </span>
-          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
-            Import Excel / CSV Gradebook
+          <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+            Import Class Record
           </h1>
           {section && (
-            <p className="text-xs text-slate-500 mt-0.5">
-              Target Section: <strong className="text-slate-900">{section.sectionCode}</strong> &bull; {section.subjectName}
+            <p className="text-xs text-slate-500 mt-1">
+              Target Section: <strong className="text-slate-900 font-semibold">{section.sectionName || section.sectionCode}</strong> &bull; {section.subjectName}
             </p>
           )}
         </div>
-      </div>
 
-      {/* Step Progress Indicators */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-xs">
-          {steps.map((st, i) => {
-            const stepNum = i + 1;
-            const isDone = currentStep > stepNum;
-            const isCurrent = currentStep === stepNum;
-            return (
-              <div
-                key={st}
-                className={`p-2 rounded-lg flex flex-col items-center justify-center transition-all ${
-                  isCurrent
-                    ? "bg-slate-900 text-white font-semibold shadow-sm"
-                    : isDone
-                    ? "bg-emerald-50 text-emerald-800 font-medium"
-                    : "text-slate-400 bg-slate-50"
-                }`}
-              >
-                <div className="flex items-center gap-1 text-[11px] mb-0.5">
-                  {isDone ? <Check className="w-3 h-3 text-emerald-600" /> : <span>Step {stepNum}</span>}
-                </div>
-                <span className="text-[11px] truncate max-w-full">{st}</span>
-              </div>
-            );
-          })}
+        {/* 2-Step Progress Indicator */}
+        <div className="flex items-center gap-2">
+          <div
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+              currentStep === 1
+                ? "bg-slate-900 text-white shadow-xs"
+                : "bg-emerald-50 text-emerald-800 border border-emerald-200"
+            }`}
+          >
+            <span>1. Upload</span>
+            {currentStep > 1 && <Check className="w-3.5 h-3.5 text-emerald-600" />}
+          </div>
+
+          <span className="text-slate-300 font-bold">&rarr;</span>
+
+          <div
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+              currentStep === 2
+                ? "bg-slate-900 text-white shadow-xs"
+                : "bg-slate-100 text-slate-400"
+            }`}
+          >
+            <span>2. Validate &amp; Save as Draft</span>
+          </div>
         </div>
       </div>
 
-      {/* STEP 1: Upload File */}
+      {/* STEP 1: UPLOAD WORKSHEET */}
       {currentStep === 1 && (
-        <Card className="border-slate-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base font-bold text-slate-900">Step 1 — Upload Spreadsheet File</CardTitle>
-            <CardDescription className="text-xs text-slate-500">
-              Upload your Excel (.xlsx, .xls) or CSV gradebook. Macro execution is disabled for safety.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:border-slate-400 transition-colors bg-slate-50/50">
-              <Upload className="w-10 h-10 text-slate-400 mx-auto mb-3" />
-              <div className="text-sm font-semibold text-slate-900">
-                Drag and drop your spreadsheet here, or browse
+        <div className="space-y-6">
+          {/* Official Template Banner */}
+          <div className="rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50/80 via-white to-blue-50/50 p-5 sm:p-6 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+                <FileSpreadsheet className="w-5 h-5" />
               </div>
-              <p className="text-xs text-slate-500 mt-1 mb-4">
-                Supports .xlsx, .xls, and .csv files up to 15MB.
-              </p>
-              <input
-                type="file"
-                id="fileUpload"
-                accept=".xlsx, .xls, .csv"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-              <label htmlFor="fileUpload">
-                <Button type="button" size="sm" variant="outline" className="cursor-pointer">
-                  Select File from Computer
-                </Button>
-              </label>
-
-              {file && (
-                <div className="mt-4 p-3 bg-emerald-50 border border-emerald-200 rounded-lg inline-flex items-center gap-2 text-xs text-emerald-800">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  <span>
-                    Selected: <strong>{file.name}</strong> ({(file.size / 1024).toFixed(1)} KB)
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-blue-900 uppercase tracking-wider">
+                    Official Class Record Template
+                  </span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-bold">
+                    Template
                   </span>
                 </div>
-              )}
-            </div>
-
-            {/* Test Samples Box */}
-            <div className="rounded-xl bg-teal-50/70 border border-teal-200/80 p-4">
-              <h4 className="text-xs font-bold text-teal-900 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                <FileSpreadsheet className="w-4 h-4 text-teal-700" />
-                Quick Test Sample Sheets
-              </h4>
-              <p className="text-xs text-teal-800 mb-3 leading-relaxed">
-                Want to test the 6-step import wizard immediately? Load one of the pre-made test spreadsheets:
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => handleLoadSample("/samples/sample_cs101_gradebook.xlsx", "sample_cs101_gradebook.xlsx")}
-                  className="text-xs bg-white text-teal-900 border-teal-300 hover:bg-teal-100"
-                >
-                  Load Clean Gradebook (8 students)
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    handleLoadSample("/samples/sample_with_validation_errors.xlsx", "sample_with_validation_errors.xlsx")
-                  }
-                  className="text-xs bg-white text-teal-900 border-teal-300 hover:bg-teal-100"
-                >
-                  Load Gradebook with Errors (Test Validation)
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-          <CardFooter className="bg-slate-50 border-t border-slate-100 flex justify-end">
-            <Button
-              size="sm"
-              disabled={!file || !workbook}
-              onClick={() => setCurrentStep(2)}
-              className="gap-1.5 font-semibold"
-            >
-              <span>Continue to Sheet Selection</span>
-              <ArrowRight className="w-4 h-4" />
-            </Button>
-          </CardFooter>
-        </Card>
-      )}
-
-      {/* STEP 2: Select Sheet & Header */}
-      {currentStep === 2 && (
-        <Card className="border-slate-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base font-bold text-slate-900">
-              Step 2 — Select Worksheet & Identify Header Row
-            </CardTitle>
-            <CardDescription className="text-xs text-slate-500">
-              Pick the target tab from your workbook and click on the row containing column headings.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Sheet Tabs */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
-                Select Worksheet:
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {sheetNames.map((name) => (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => handleSheetChange(name)}
-                    className={`px-3 py-1.5 text-xs rounded-lg border font-medium transition-all ${
-                      selectedSheet === name
-                        ? "bg-slate-900 text-white border-slate-900 shadow-sm"
-                        : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
-                    }`}
-                  >
-                    {name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Formula warning if detected */}
-            {formulaWarning && (
-              <div className="rounded-lg bg-amber-50 border border-amber-200 p-3.5 flex items-start gap-2.5 text-xs text-amber-900">
-                <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <div>
-                  <strong>Excel Formula Detected: </strong>
-                  Browser libraries import cached calculated values. Please ensure you saved your file in Excel after any formula changes.
-                </div>
-              </div>
-            )}
-
-            {/* Table preview */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs text-slate-600">
-                <span>Click a row to select it as the Header Row:</span>
-                <span className="font-semibold text-slate-900">Current Header: Row {headerRowIndex + 1}</span>
-              </div>
-
-              <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-72">
-                <table className="w-full text-xs text-left divide-y divide-slate-100">
-                  <tbody className="divide-y divide-slate-100">
-                    {rawRows.slice(0, 10).map((row, idx) => {
-                      const isHeader = idx === headerRowIndex;
-                      return (
-                        <tr
-                          key={idx}
-                          onClick={() => setHeaderRowIndex(idx)}
-                          className={`cursor-pointer transition-colors ${
-                            isHeader
-                              ? "bg-slate-900 text-white font-bold"
-                              : "hover:bg-slate-100 text-slate-700"
-                          }`}
-                        >
-                          <td className="px-3 py-2 w-16 text-center font-mono opacity-60 text-[10px]">
-                            {isHeader ? "HEADER" : `R${idx + 1}`}
-                          </td>
-                          {row.slice(0, 8).map((cell: any, cIdx: number) => (
-                            <td key={cIdx} className="px-3 py-2 truncate max-w-[120px]">
-                              {String(cell || "")}
-                            </td>
-                          ))}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </CardContent>
-          <CardFooter className="bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-            <Button size="sm" variant="outline" onClick={() => setCurrentStep(1)}>
-              Back
-            </Button>
-            <Button size="sm" onClick={proceedToMapping} className="gap-1.5 font-semibold">
-              <span>Confirm Header & Map Columns</span>
-              <ArrowRight className="w-4 h-4" />
-            </Button>
-          </CardFooter>
-        </Card>
-      )}
-
-      {/* STEP 3: Map Columns */}
-      {currentStep === 3 && (
-        <Card className="border-slate-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base font-bold text-slate-900">Step 3 — Map Columns</CardTitle>
-            <CardDescription className="text-xs text-slate-500">
-              Confirm which columns correspond to Student ID, Name, Assessment columns, and Final Grade.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              {/* Student ID */}
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-                <label className="block text-xs font-bold text-slate-900 uppercase tracking-wider mb-1">
-                  Student ID (Required) *
-                </label>
-                <select
-                  value={studentIdCol}
-                  onChange={(e) => setStudentIdCol(e.target.value)}
-                  className="w-full p-2 text-xs rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
-                >
-                  <option value="">-- Select Column --</option>
-                  {headers.map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-slate-500 mt-1">Unique identifier per student.</p>
-              </div>
-
-              {/* Student Name */}
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-                <label className="block text-xs font-bold text-slate-900 uppercase tracking-wider mb-1">
-                  Student Name (Recommended)
-                </label>
-                <select
-                  value={studentNameCol}
-                  onChange={(e) => setStudentNameCol(e.target.value)}
-                  className="w-full p-2 text-xs rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
-                >
-                  <option value="">-- None / Do not import --</option>
-                  {headers.map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-slate-500 mt-1">Full student display name.</p>
-              </div>
-
-              {/* Final Grade */}
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-                <label className="block text-xs font-bold text-slate-900 uppercase tracking-wider mb-1">
-                  Final Grade (Optional)
-                </label>
-                <select
-                  value={finalGradeCol}
-                  onChange={(e) => setFinalGradeCol(e.target.value)}
-                  className="w-full p-2 text-xs rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
-                >
-                  <option value="">-- None / Calculate later --</option>
-                  {headers.map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-slate-500 mt-1">Pre-computed overall course grade.</p>
-              </div>
-            </div>
-
-            {/* Assessment Columns */}
-            <div className="space-y-3 pt-2">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                  Assessment Columns ({assessmentCols.length})
-                </h4>
-                <span className="text-[11px] text-slate-500">Specify maximum score per item</span>
-              </div>
-
-              <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-60 overflow-y-auto">
-                {assessmentCols.map((ass, i) => (
-                  <div key={i} className="p-3 flex items-center justify-between gap-4 text-xs">
-                    <span className="font-semibold text-slate-900 truncate flex-1">{ass.name}</span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-400 text-[11px]">Max Score:</span>
-                      <input
-                        type="number"
-                        min="1"
-                        value={ass.maxScore}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value, 10) || 100;
-                          const copy = [...assessmentCols];
-                          copy[i].maxScore = val;
-                          setAssessmentCols(copy);
-                        }}
-                        className="w-20 px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-slate-900 text-right font-mono"
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </CardContent>
-          <CardFooter className="bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-            <Button size="sm" variant="outline" onClick={() => setCurrentStep(2)}>
-              Back
-            </Button>
-            <Button size="sm" onClick={proceedToValidation} className="gap-1.5 font-semibold">
-              <span>Validate Spreadsheet</span>
-              <ArrowRight className="w-4 h-4" />
-            </Button>
-          </CardFooter>
-        </Card>
-      )}
-
-      {/* STEP 4: Validation Engine */}
-      {currentStep === 4 && (
-        <Card className="border-slate-200 shadow-sm">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-base font-bold text-slate-900">
-                  Step 4 — Validation & Error Detection
-                </CardTitle>
-                <CardDescription className="text-xs text-slate-500">
-                  System verifies duplicate identifiers, missing keys, and out-of-range values.
-                </CardDescription>
-              </div>
-              {validationIssues.length > 0 && (
-                <Button size="sm" variant="outline" onClick={handleDownloadErrorReport} className="gap-1.5 text-xs">
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download Report CSV</span>
-                </Button>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {validationIssues.length === 0 ? (
-              <div className="p-8 text-center rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 space-y-2">
-                <CheckCircle2 className="w-10 h-10 text-emerald-600 mx-auto" />
-                <h4 className="font-bold text-sm">All Records Passed Validation!</h4>
-                <p className="text-xs text-emerald-700 max-w-md mx-auto">
-                  No duplicate IDs, missing fields, or abnormal score formats were detected. Ready to proceed to review.
+                <p className="text-xs text-slate-600 leading-relaxed max-w-xl">
+                  Row 11 (<code className="font-mono text-slate-800">G11..AH11</code>) defines active assessment titles; Row 12 defines HPS. Columns without titles are automatically omitted.
                 </p>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between">
-                  <span>
-                    Detected <strong>{validationIssues.length} issues</strong> (
-                    {validationIssues.filter((i) => i.type === "error").length} errors,{" "}
-                    {validationIssues.filter((i) => i.type === "warning").length} warnings).
-                  </span>
-                  <span className="text-[11px] text-amber-800">Invalid rows will be skipped safely.</span>
-                </div>
+            </div>
 
-                <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-64">
-                  <table className="w-full text-xs text-left divide-y divide-slate-100">
-                    <thead className="bg-slate-50 text-slate-700 uppercase font-semibold text-[10px]">
-                      <tr>
-                        <th className="px-3 py-2">Row</th>
-                        <th className="px-3 py-2">Severity</th>
-                        <th className="px-3 py-2">Field</th>
-                        <th className="px-3 py-2">Detected Value</th>
-                        <th className="px-3 py-2">Issue Description</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {validationIssues.map((iss, i) => (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="px-3 py-2 font-mono text-slate-500">Row {iss.row}</td>
-                          <td className="px-3 py-2">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
-                                iss.type === "error"
-                                  ? "bg-rose-100 text-rose-800"
-                                  : "bg-amber-100 text-amber-800"
-                              }`}
-                            >
-                              {iss.type}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 font-medium text-slate-900">{iss.field}</td>
-                          <td className="px-3 py-2 font-mono text-slate-600 truncate max-w-[120px]">
-                            {String(iss.value)}
-                          </td>
-                          <td className="px-3 py-2 text-slate-600">{iss.message}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </CardContent>
-          <CardFooter className="bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-            <Button size="sm" variant="outline" onClick={() => setCurrentStep(3)}>
-              Back
-            </Button>
-            <Button size="sm" onClick={() => setCurrentStep(5)} className="gap-1.5 font-semibold">
-              <span>Review Changes</span>
-              <ArrowRight className="w-4 h-4" />
-            </Button>
-          </CardFooter>
-        </Card>
+            <div className="flex items-center gap-2 shrink-0">
+              <a href="/template.xlsx" download="class_record_template.xlsx">
+                <Button size="sm" variant="primary" className="gap-1.5 text-xs shadow-xs font-semibold">
+                  <Download className="w-3.5 h-3.5 text-white" />
+                  <span>Download Template</span>
+                </Button>
+              </a>
+            </div>
+          </div>
+
+          {/* Drag & Drop File Upload Zone */}
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`border-2 border-dashed rounded-2xl p-10 sm:p-14 text-center cursor-pointer transition-all ${
+              isDragging
+                ? "border-blue-500 bg-blue-50/60 scale-[1.01]"
+                : "border-slate-300 hover:border-slate-400 bg-white hover:bg-slate-50/60"
+            }`}
+          >
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileChange}
+              accept=".xlsx,.xls"
+              className="hidden"
+            />
+
+            <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-600 flex items-center justify-center mx-auto mb-4 border border-slate-200">
+              {isProcessing ? (
+                <div className="animate-spin w-6 h-6 border-2 border-slate-300 border-t-slate-900 rounded-full"></div>
+              ) : (
+                <Upload className="w-7 h-7 text-slate-600" />
+              )}
+            </div>
+
+            <h3 className="text-base sm:text-lg font-bold text-slate-900">
+              {isProcessing ? "Analyzing & Validating Worksheet..." : "Drag and drop your gradebook file here"}
+            </h3>
+            <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+              Supports official <code className="font-mono text-slate-800">.xlsx</code> files up to 15MB.
+            </p>
+
+            <div className="mt-5">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="pointer-events-none text-xs font-semibold bg-white"
+              >
+                <FolderOpen className="w-3.5 h-3.5 mr-1.5" />
+                Browse Files
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
-      {/* STEP 5: Review Changes */}
-      {currentStep === 5 && (
-        <Card className="border-slate-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base font-bold text-slate-900">Step 5 — Review Changes & Diff</CardTitle>
-            <CardDescription className="text-xs text-slate-500">
-              Confirm the students and assessment marks to be committed as Draft.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {(() => {
-              const payload = getPreparedPayload();
-              return (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-3 gap-4 text-center">
-                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl">
-                      <div className="text-2xl font-bold text-slate-900">{payload.rows.length}</div>
-                      <div className="text-xs text-slate-500 mt-1">Valid Records</div>
-                    </div>
-                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl">
-                      <div className="text-2xl font-bold text-slate-900">{assessmentCols.length}</div>
-                      <div className="text-xs text-slate-500 mt-1">Assessment Items</div>
-                    </div>
-                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl">
-                      <div className="text-2xl font-bold text-slate-900">
-                        {validationIssues.filter((i) => i.type === "error").length}
-                      </div>
-                      <div className="text-xs text-slate-500 mt-1">Skipped Bad Rows</div>
-                    </div>
-                  </div>
-
-                  <div className="border border-slate-200 rounded-xl overflow-x-auto max-h-60">
-                    <table className="w-full text-xs text-left divide-y divide-slate-100">
-                      <thead className="bg-slate-100 font-semibold text-slate-700">
-                        <tr>
-                          <th className="px-3 py-2">Student ID</th>
-                          <th className="px-3 py-2">Name</th>
-                          {assessmentCols.map((ass) => (
-                            <th key={ass.name} className="px-3 py-2 text-right">
-                              {ass.name}
-                            </th>
-                          ))}
-                          <th className="px-3 py-2 text-right">Final Grade</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {payload.rows.slice(0, 10).map((r, i) => (
-                          <tr key={i} className="hover:bg-slate-50">
-                            <td className="px-3 py-2 font-mono font-medium text-slate-900">{r.studentNumber}</td>
-                            <td className="px-3 py-2 text-slate-900">{r.displayName}</td>
-                            {assessmentCols.map((ass) => (
-                              <td key={ass.name} className="px-3 py-2 text-right font-mono text-slate-700">
-                                {r.scores[ass.name] !== null ? r.scores[ass.name] : "—"}
-                              </td>
-                            ))}
-                            <td className="px-3 py-2 text-right font-mono font-bold text-slate-900">
-                              {r.finalGrade || "—"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <p className="text-xs text-slate-500 leading-relaxed">
-                    Note: Submitting will save these records into section <strong>{section?.sectionCode}</strong> as a <strong>DRAFT</strong>. Students will NOT see these marks until you review the gradebook and click <strong>Publish</strong>.
-                  </p>
+      {/* STEP 2: VALIDATE DATA & SAVE AS DRAFT */}
+      {currentStep === 2 && parsedData && (
+        <div className="space-y-6">
+          {/* File Header Pill */}
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 text-blue-600 flex items-center justify-center shrink-0">
+                <FileSpreadsheet className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="font-bold text-slate-900 text-xs truncate max-w-sm">
+                  {file?.name || "class_record_template.xlsx"}
                 </div>
-              );
-            })()}
-          </CardContent>
-          <CardFooter className="bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-            <Button size="sm" variant="outline" onClick={() => setCurrentStep(4)}>
-              Back
-            </Button>
+                <div className="text-[11px] text-slate-500">
+                  {file ? `${(file.size / 1024).toFixed(1)} KB &bull; ` : ""}
+                  Worksheet &ldquo;{parsedData.metadata.subjectTitle || "Input Here"}&rdquo;
+                </div>
+              </div>
+            </div>
+
             <Button
               size="sm"
-              onClick={handleCommitImport}
-              isLoading={isSaving}
-              className="gap-1.5 font-semibold bg-slate-900 text-white"
+              variant="outline"
+              onClick={() => {
+                setCurrentStep(1);
+                setFile(null);
+                setParsedData(null);
+              }}
+              className="gap-1.5 text-xs text-slate-600 hover:text-slate-900"
             >
-              <CheckCircle2 className="w-4 h-4 text-teal-400" />
-              <span>Confirm & Save as Draft</span>
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Upload Different File</span>
             </Button>
-          </CardFooter>
-        </Card>
-      )}
-
-      {/* STEP 6: Saved as Draft Confirmation */}
-      {currentStep === 6 && (
-        <Card className="border-emerald-200 bg-gradient-to-br from-emerald-50/50 via-white to-slate-50 shadow-sm p-8 text-center space-y-4">
-          <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-700 mx-auto flex items-center justify-center shadow-sm">
-            <CheckCircle2 className="w-8 h-8" />
           </div>
-          <h2 className="text-2xl font-bold text-slate-900">Gradebook Saved as Draft</h2>
-          <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
-            Your spreadsheet marks have been securely imported and linked to section{" "}
-            <strong>{section?.sectionCode}</strong>. Consistent with the intentional publishing principle, records remain private drafts.
-          </p>
 
-          {importSummary && (
-            <div className="grid grid-cols-3 gap-3 max-w-sm mx-auto text-center pt-2">
-              <div className="p-3 bg-white border border-slate-200 rounded-lg">
-                <div className="text-lg font-bold text-slate-900">{importSummary.created}</div>
-                <div className="text-[11px] text-slate-500">Created</div>
+          {/* Validation Metrics Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            {/* Status Card */}
+            <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800">
+                  Validation
+                </span>
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
               </div>
-              <div className="p-3 bg-white border border-slate-200 rounded-lg">
-                <div className="text-lg font-bold text-slate-900">{importSummary.updated}</div>
-                <div className="text-[11px] text-slate-500">Updated</div>
+              <div className="text-sm font-bold text-emerald-950">
+                {hasErrors ? "Errors Detected" : "Verified & Clean"}
               </div>
-              <div className="p-3 bg-white border border-slate-200 rounded-lg">
-                <div className="text-lg font-bold text-slate-900">{importSummary.skipped}</div>
-                <div className="text-[11px] text-slate-500">Skipped</div>
+              <div className="text-[10px] text-emerald-800">
+                {validationIssues.length === 0 ? "0 issues found" : `${validationIssues.length} notice(s)`}
+              </div>
+            </div>
+
+            {/* Students Card */}
+            <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-1 shadow-2xs">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Students
+              </span>
+              <div className="text-2xl font-bold font-mono text-slate-900">
+                {parsedData.students.length}
+              </div>
+              <div className="text-[10px] text-slate-500">
+                Enrolled records ready to import
+              </div>
+            </div>
+
+            {/* Assessment Items Card */}
+            <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-1 shadow-2xs">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Active Columns
+              </span>
+              <div className="text-2xl font-bold font-mono text-blue-900">
+                {parsedData.assessmentItems.length}
+              </div>
+              <div className="text-[10px] text-slate-500">
+                Titled items in Row 11
+              </div>
+            </div>
+
+            {/* Weights Card */}
+            <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-1 shadow-2xs">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Formulas
+              </span>
+              <div className="text-xs font-bold text-slate-900">
+                CP 30% &bull; EA 30%
+              </div>
+              <div className="text-[10px] text-slate-500">
+                MPT 40% (Mid) &bull; MPT/CPT 20% (Fin)
+              </div>
+            </div>
+          </div>
+
+          {/* Validation Notices / Warnings Drawer (if any) */}
+          {validationIssues.length > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span className="font-bold text-amber-950 text-xs">
+                    Validation Notices ({validationIssues.length})
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleDownloadErrorReport}
+                  className="gap-1 text-[11px] bg-white text-amber-900 border-amber-300 h-7"
+                >
+                  <Download className="w-3 h-3" />
+                  <span>Download Report (CSV)</span>
+                </Button>
+              </div>
+
+              <div className="max-h-36 overflow-y-auto divide-y divide-amber-200/60 text-xs">
+                {validationIssues.slice(0, 10).map((iss, i) => (
+                  <div key={i} className="py-1.5 flex items-center justify-between gap-2">
+                    <span className="text-amber-900 font-mono text-[11px]">Row {iss.row} &bull; {iss.field}</span>
+                    <span className="text-amber-800 text-[11px] truncate max-w-md">{iss.message}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
 
-          <div className="pt-6 flex flex-wrap items-center justify-center gap-3">
-            <Link href={`/professor/sections/${sectionId}`}>
-              <Button size="md" className="gap-2 shadow-sm font-semibold">
-                <FileSpreadsheet className="w-4 h-4" />
-                <span>Open Section Gradebook</span>
-              </Button>
-            </Link>
+          {/* Clean Student Roster Preview Table */}
+          <Card className="border border-slate-200/90 shadow-xs overflow-hidden rounded-xl bg-white">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Roster Preview</h3>
+                <p className="text-xs text-slate-500">
+                  Showing first {Math.min(15, parsedData.students.length)} of {parsedData.students.length} students
+                </p>
+              </div>
+              <span className="text-xs font-mono font-semibold px-2.5 py-0.5 rounded bg-slate-100 text-slate-700">
+                Row 13 to {12 + parsedData.students.length}
+              </span>
+            </div>
 
-            <Link href={`/professor/sections/${sectionId}/credentials`}>
-              <Button size="md" variant="outline" className="gap-2">
-                <FolderOpen className="w-4 h-4" />
-                <span>Manage Student Credentials</span>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-slate-50 text-slate-700 border-b border-slate-200 font-semibold">
+                  <tr>
+                    <th className="px-5 py-3">Student ID</th>
+                    <th className="px-5 py-3">Student Name</th>
+                    <th className="px-5 py-3">Midterm Grade</th>
+                    <th className="px-5 py-3 font-bold text-blue-900 bg-blue-50/30">Final Grade</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white font-medium">
+                  {parsedData.students.slice(0, 15).map((st, idx) => {
+                    const isMidR =
+                      (st.midtermPercentage !== null && st.midtermPercentage < 60) ||
+                      (st.midtermEquivalent && st.midtermEquivalent.toUpperCase().startsWith("R"));
+
+                    const midStr = isMidR
+                      ? (st.midtermPercentage !== null ? `R (${st.midtermPercentage.toFixed(2)}%)` : "R")
+                      : st.midtermEquivalent && st.midtermPercentage !== null
+                      ? `${st.midtermEquivalent} (${st.midtermPercentage}%)`
+                      : st.midtermPercentage !== null
+                      ? `${st.midtermPercentage}%`
+                      : "-";
+
+                    const isFinR =
+                      (st.finalPercentage !== null && st.finalPercentage < 60) ||
+                      (st.finalEquivalent && st.finalEquivalent.toUpperCase().startsWith("R"));
+
+                    const finStr = isFinR
+                      ? (st.finalPercentage !== null ? `R (${st.finalPercentage.toFixed(2)}%)` : "R")
+                      : st.finalEquivalent && st.finalPercentage !== null
+                      ? `${st.finalEquivalent} (${st.finalPercentage}%)`
+                      : st.finalPercentage !== null
+                      ? `${st.finalPercentage}%`
+                      : "-";
+
+                    return (
+                      <tr key={idx} className="hover:bg-slate-50/70 transition-colors">
+                        <td className="px-5 py-3 font-mono font-semibold text-slate-800">
+                          {st.studentNumber}
+                        </td>
+                        <td className="px-5 py-3 font-semibold text-slate-900">
+                          {st.displayName}
+                        </td>
+                        <td className="px-5 py-3 font-mono text-slate-700">
+                          {midStr !== "-" ? (
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded font-semibold text-xs border ${
+                              midStr.startsWith("R")
+                                ? "bg-amber-50 text-amber-900 border-amber-200"
+                                : "bg-slate-100 text-slate-800 border-slate-200"
+                            }`}>
+                              {midStr}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 font-mono">-</span>
+                          )}
+                        </td>
+                        <td className="px-5 py-3 font-mono font-bold text-blue-900 bg-blue-50/20">
+                          {finStr !== "-" ? (
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded font-bold text-xs border ${
+                              finStr.startsWith("R")
+                                ? "bg-amber-50 text-amber-900 border-amber-200"
+                                : "bg-blue-50 text-blue-900 border-blue-200"
+                            }`}>
+                              {finStr}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 font-mono">-</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {parsedData.students.length > 15 && (
+              <div className="p-3 bg-slate-50 border-t border-slate-200 text-center text-xs text-slate-500 font-medium">
+                + {parsedData.students.length - 15} more student records will be saved
+              </div>
+            )}
+          </Card>
+
+          {/* Action Footer: Save as Draft then Boom! */}
+          <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-0.5">
+              <div className="font-bold text-slate-900 text-xs">Ready to Import</div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Imports {parsedData.students.length} students and {parsedData.assessmentItems.length} active assessment columns in <strong>Draft</strong> status.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setCurrentStep(1);
+                  setFile(null);
+                  setParsedData(null);
+                }}
+                disabled={isSaving}
+              >
+                Cancel
               </Button>
-            </Link>
+
+              <Button
+                size="sm"
+                onClick={handleSaveAsDraft}
+                isLoading={isSaving}
+                className="gap-1.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-bold px-5 shadow-xs"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span>Save as Draft (Import)</span>
+              </Button>
+            </div>
           </div>
-        </Card>
+        </div>
       )}
     </div>
   );

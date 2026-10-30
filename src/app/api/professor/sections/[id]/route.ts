@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit";
+import { generateSectionSnapshots } from "@/lib/snapshot";
+import { serverCache } from "@/lib/server-cache";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -16,6 +18,19 @@ export async function GET(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "Unauthorized access" }, { status: 401 });
     }
 
+    const cacheKey = `prof_section_${id}`;
+    const cached = serverCache.get(cacheKey);
+    if (cached) {
+      return NextResponse.json(
+        { section: cached },
+        {
+          headers: {
+            "Cache-Control": "private, max-age=5, stale-while-revalidate=30",
+          },
+        }
+      );
+    }
+
     const section = await prisma.section.findUnique({
       where: { id },
       include: {
@@ -23,16 +38,49 @@ export async function GET(request: Request, { params }: RouteParams) {
           select: { id: true, displayName: true, email: true },
         },
         gradeItems: {
+          select: {
+            id: true,
+            name: true,
+            category: true,
+            maxScore: true,
+            displayOrder: true,
+          },
           orderBy: { displayOrder: "asc" },
         },
         sectionStudents: {
-          include: {
-            student: true,
-            gradeRecords: true,
+          select: {
+            id: true,
+            finalGrade: true,
+            finalGradeStatus: true,
+            remarks: true,
+            credentialStatus: true,
+            student: {
+              select: {
+                id: true,
+                studentNumber: true,
+                displayName: true,
+              },
+            },
+            gradeRecords: {
+              select: {
+                gradeItemId: true,
+                score: true,
+                status: true,
+              },
+            },
           },
           orderBy: { student: { studentNumber: "asc" } },
         },
         imports: {
+          select: {
+            id: true,
+            fileName: true,
+            status: true,
+            createdCount: true,
+            updatedCount: true,
+            skippedCount: true,
+            createdAt: true,
+          },
           orderBy: { createdAt: "desc" },
           take: 5,
         },
@@ -51,7 +99,16 @@ export async function GET(request: Request, { params }: RouteParams) {
       );
     }
 
-    return NextResponse.json({ section });
+    serverCache.set(cacheKey, section, 20);
+
+    return NextResponse.json(
+      { section },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+        },
+      }
+    );
   } catch (error) {
     console.error("Fetch section error:", error);
     return NextResponse.json({ error: "Failed to fetch section" }, { status: 500 });
@@ -88,6 +145,13 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     if (body.showBreakdown !== undefined) updateData.showBreakdown = Boolean(body.showBreakdown);
     if (body.showProvisionalNotice !== undefined)
       updateData.showProvisionalNotice = Boolean(body.showProvisionalNotice);
+    if (body.publishedPeriod !== undefined) updateData.publishedPeriod = String(body.publishedPeriod);
+    if (body.weightConfig !== undefined) {
+      updateData.weightConfig =
+        typeof body.weightConfig === "string"
+          ? body.weightConfig
+          : JSON.stringify(body.weightConfig);
+    }
 
     // Publication state change
     if (body.status !== undefined) {
@@ -116,6 +180,17 @@ export async function PATCH(request: Request, { params }: RouteParams) {
       data: updateData,
     });
 
+    if (updated.status === "PUBLISHED") {
+      // Pre-compute student grade snapshots in the background for 0.8ms point lookups
+      generateSectionSnapshots(id).catch((err) =>
+        console.error("Failed to generate section snapshots on update:", err)
+      );
+    }
+
+    serverCache.delete(`prof_section_${id}`);
+    serverCache.invalidatePrefix("prof_sections_");
+    serverCache.invalidatePrefix("sec_meta_");
+
     return NextResponse.json({ success: true, section: updated });
   } catch (error) {
     console.error("Update section error:", error);
@@ -142,6 +217,10 @@ export async function DELETE(request: Request, { params }: RouteParams) {
     }
 
     await prisma.section.delete({ where: { id } });
+
+    serverCache.delete(`prof_section_${id}`);
+    serverCache.invalidatePrefix("prof_sections_");
+    serverCache.invalidatePrefix("sec_meta_");
 
     await recordAuditLog({
       actorId: session.id,

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
-import * as XLSX from "xlsx";
+import path from "path";
+import fs from "fs";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -15,20 +16,10 @@ export async function GET(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "Unauthorized access" }, { status: 401 });
     }
 
-    const { searchParams } = new URL(request.url);
-    const format = searchParams.get("format") || "xlsx";
-
     const section = await prisma.section.findUnique({
       where: { id },
       include: {
-        gradeItems: { orderBy: { displayOrder: "asc" } },
-        sectionStudents: {
-          include: {
-            student: true,
-            gradeRecords: true,
-          },
-          orderBy: { student: { studentNumber: "asc" } },
-        },
+        ownerProfessor: { select: { displayName: true, email: true } },
       },
     });
 
@@ -40,66 +31,55 @@ export async function GET(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Build header row
-    const headers = ["Student ID", "Student Name"];
-    section.gradeItems.forEach((item) => {
-      headers.push(`${item.name} (${item.maxScore})`);
-    });
-    headers.push("Final Grade");
-    headers.push("Final Grade Status");
-    headers.push("Remarks");
-
-    // Build data rows
-    const rows: (string | number)[][] = [headers];
-
-    section.sectionStudents.forEach((secStudent) => {
-      const recordsMap = new Map<string, number | null>();
-      secStudent.gradeRecords.forEach((r) => recordsMap.set(r.gradeItemId, r.score));
-
-      const row: (string | number)[] = [
-        secStudent.student.studentNumber,
-        secStudent.student.displayName,
-      ];
-
-      section.gradeItems.forEach((item) => {
-        const val = recordsMap.get(item.id);
-        row.push(val !== undefined && val !== null ? val : "");
-      });
-
-      row.push(secStudent.finalGrade || "");
-      row.push(secStudent.finalGradeStatus || "");
-      row.push(secStudent.remarks || "");
-
-      rows.push(row);
-    });
-
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, section.sectionName || "Grades");
-
-    const safeFilename = `${section.sectionCode}_Gradebook`;
-
-    if (format === "csv") {
-      const csv = XLSX.utils.sheet_to_csv(worksheet);
-      return new NextResponse(csv, {
-        headers: {
-          "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${safeFilename}.csv"`,
-        },
-      });
+    // 1. Locate the exact uploaded template file for this section
+    const sectionUploadDir = path.join(process.cwd(), "storage", "sections", section.id);
+    const uploadedFilePath = path.join(sectionUploadDir, "uploaded_template.xlsx");
+    let originalFileName: string | null = null;
+    const originalNamePath = path.join(sectionUploadDir, "original_filename.txt");
+    if (fs.existsSync(originalNamePath)) {
+      try {
+        originalFileName = fs.readFileSync(originalNamePath, "utf8").trim();
+      } catch (e) {
+        console.error("Failed to read original_filename.txt:", e);
+      }
     }
 
-    // XLSX format
-    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+    // 2. Select file to export:
+    // Priority 1: The exact template file uploaded during import (preserves 100% of the design, logo, colors, watermarks, and contents)
+    // Priority 2: The official master template from public/template.xlsx (or public/grading_sheet_v3.xlsx)
+    let exportFilePath: string | null = null;
+    if (fs.existsSync(uploadedFilePath)) {
+      exportFilePath = uploadedFilePath;
+    } else {
+      const publicMaster = path.join(process.cwd(), "public", "template.xlsx");
+      const fallbackMaster = path.join(process.cwd(), "public", "grading_sheet_v3.xlsx");
+      if (fs.existsSync(publicMaster)) {
+        exportFilePath = publicMaster;
+      } else if (fs.existsSync(fallbackMaster)) {
+        exportFilePath = fallbackMaster;
+      }
+    }
 
-    return new NextResponse(buffer, {
+    if (!exportFilePath || !fs.existsSync(exportFilePath)) {
+      return NextResponse.json({ error: "Template file not found" }, { status: 404 });
+    }
+
+    // Read the binary file directly to prevent any loss of styles, theme colors, drawing XML, or logo images
+    const fileBuffer = fs.readFileSync(exportFilePath);
+
+    const safeFilename = originalFileName
+      ? (originalFileName.toLowerCase().endsWith(".xlsx") ? originalFileName : `${originalFileName}.xlsx`)
+      : `${section.sectionCode}_Class_Record.xlsx`;
+
+    return new NextResponse(fileBuffer, {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "Content-Disposition": `attachment; filename="${safeFilename}.xlsx"`,
+        "Content-Disposition": `attachment; filename="${safeFilename}"`,
+        "Cache-Control": "no-store, max-age=0",
       },
     });
   } catch (error) {
-    console.error("Export error:", error);
-    return NextResponse.json({ error: "Failed to export gradebook" }, { status: 500 });
+    console.error("Export section error:", error);
+    return NextResponse.json({ error: "Failed to export section" }, { status: 500 });
   }
 }

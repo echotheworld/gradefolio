@@ -1,30 +1,49 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
-import { getSession, getStudentSession } from "@/lib/auth";
-import { Navbar } from "@/components/layout/Navbar";
-import { Footer } from "@/components/layout/Footer";
+import React, { Suspense } from "react";
 import { ToastProvider } from "@/components/ui/Toast";
+import { NavigationProgress } from "@/components/ui/NavigationProgress";
+import { HydrationMarker } from "@/components/ui/HydrationMarker";
+
+const fontSans = Inter({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-sans",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
-  title: "GradeView — Your grades, clearly presented.",
+  title: "Gradefolio",
   description:
-    "A privacy-first grade publishing portal for professors and students. Spreadsheets in, clean private grades out.",
+    "A private space to review your published grades and score breakdowns without requesting spreadsheets or relying on screenshots from your professor.",
+  icons: {
+    icon: [
+      { url: "/favicon_io/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon_io/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+      { url: "/favicon_io/favicon.ico" },
+    ],
+    apple: [
+      { url: "/favicon_io/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
+  manifest: "/favicon_io/site.webmanifest",
 };
 
-export default async function RootLayout({
+export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const [user, studentSession] = await Promise.all([getSession(), getStudentSession()]);
-
   return (
-    <html lang="en" className="h-full">
-      <body className="min-h-full flex flex-col bg-slate-50/50 text-slate-900 antialiased selection:bg-teal-100 selection:text-teal-900">
+    <html lang="en" className={`h-full ${fontSans.variable}`}>
+      <body className={`${fontSans.className} min-h-full flex flex-col bg-[#F8FAFC] text-slate-900 antialiased selection:bg-[#2563EB] selection:text-white`}>
+        <Suspense fallback={null}>
+          <NavigationProgress />
+        </Suspense>
+        <HydrationMarker />
         <ToastProvider>
-          <Navbar user={user} studentSession={studentSession} />
           <main className="flex-1">{children}</main>
-          <Footer />
         </ToastProvider>
       </body>
     </html>

@@ -2,6 +2,36 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession, hashPassword, verifyPassword } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit";
+import { validateNistPassword } from "@/lib/nist-password";
+
+// GET /api/professor/account
+export async function GET() {
+  try {
+    const session = await getSession();
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: session.id },
+      select: {
+        id: true,
+        email: true,
+        displayName: true,
+        role: true,
+      },
+    });
+
+    if (!user) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ user });
+  } catch (error) {
+    console.error("Account fetch error:", error);
+    return NextResponse.json({ error: "Failed to fetch account" }, { status: 500 });
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -10,7 +40,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { currentPassword, newPassword, displayName } = await request.json();
+    const { currentPassword, newPassword } = await request.json();
 
     const user = await prisma.user.findUnique({ where: { id: session.id } });
     if (!user) {
@@ -18,10 +48,6 @@ export async function POST(request: Request) {
     }
 
     const updateData: Record<string, string> = {};
-
-    if (displayName && displayName.trim() !== user.displayName) {
-      updateData.displayName = displayName.trim();
-    }
 
     if (newPassword) {
       if (!currentPassword) {
@@ -36,11 +62,12 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Current password does not match." }, { status: 400 });
       }
 
-      if (newPassword.length < 8) {
-        return NextResponse.json(
-          { error: "New password must be at least 8 characters long." },
-          { status: 400 }
-        );
+      const validation = validateNistPassword(newPassword, {
+        email: user.email,
+        displayName: user.displayName,
+      });
+      if (!validation.isValid) {
+        return NextResponse.json({ error: validation.errors[0] }, { status: 400 });
       }
 
       updateData.passwordHash = await hashPassword(newPassword);

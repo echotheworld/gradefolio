@@ -6,6 +6,7 @@ export type BadgeVariant =
   | "published"
   | "archived"
   | "needs_attention"
+  | "needs_review"
   | "provisional"
   | "final"
   | "missing"
@@ -19,22 +20,23 @@ interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
 
 export function Badge({ className, variant = "default", children, ...props }: BadgeProps) {
   const variants: Record<BadgeVariant, string> = {
-    draft: "bg-amber-50 text-amber-800 border-amber-200",
-    published: "bg-emerald-50 text-emerald-800 border-emerald-200",
+    draft: "bg-[#FEF3C7] text-[#92400E] border-[#FCD34D]",
+    published: "bg-emerald-50 text-emerald-800 border-emerald-300",
     archived: "bg-slate-100 text-slate-600 border-slate-200",
-    needs_attention: "bg-rose-50 text-rose-800 border-rose-200",
-    provisional: "bg-indigo-50 text-indigo-800 border-indigo-200",
-    final: "bg-teal-50 text-teal-800 border-teal-200",
-    missing: "bg-orange-50 text-orange-800 border-orange-200",
+    needs_attention: "bg-[#FEF3C7] text-[#92400E] border-[#FCD34D]",
+    needs_review: "bg-[#FEF3C7] text-[#92400E] border-[#FCD34D]",
+    provisional: "bg-[#FEF3C7] text-[#92400E] border-[#FCD34D]",
+    final: "bg-blue-50 text-[#2563EB] border-blue-200",
+    missing: "bg-rose-50 text-rose-800 border-rose-200",
     not_recorded: "bg-slate-50 text-slate-500 border-slate-200",
     default: "bg-slate-100 text-slate-800 border-slate-200",
-    info: "bg-blue-50 text-blue-800 border-blue-200",
+    info: "bg-blue-50 text-[#2563EB] border-blue-200",
   };
 
   return (
     <span
       className={cn(
-        "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border",
+        "inline-flex items-center px-3 py-0.5 rounded-full text-xs font-semibold border shadow-2xs",
         variants[variant],
         className
       )}

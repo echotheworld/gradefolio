@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession, hashPassword } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit";
+import { validateNistPassword, generateNistPassword } from "@/lib/nist-password";
 
 // GET /api/admin/professors
 export async function GET() {
@@ -50,7 +51,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "A user with this email already exists" }, { status: 400 });
     }
 
-    const tempPassword = initialPassword || "FacultyPass2026!";
+    const tempPassword = initialPassword ? initialPassword.trim() : generateNistPassword();
+    const validation = validateNistPassword(tempPassword, { email, displayName });
+    if (!validation.isValid) {
+      return NextResponse.json({ error: validation.errors[0] }, { status: 400 });
+    }
+
     const passwordHash = await hashPassword(tempPassword);
 
     const professor = await prisma.user.create({

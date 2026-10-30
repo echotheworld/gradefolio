@@ -22,6 +22,12 @@ import {
   Edit3,
   X,
   Upload,
+  RotateCcw,
+  RefreshCw,
+  BarChart3,
+  TrendingUp,
+  Award,
+  Activity,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
@@ -29,6 +35,8 @@ import { StatusChip } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { formatDate } from "@/lib/utils";
+import { getCachedData, setCachedData, invalidateCache } from "@/lib/client-cache";
+import { calculateGradeEquivalent } from "@/lib/class-record-parser";
 
 interface GradeItem {
   id: string;
@@ -66,12 +74,33 @@ interface SectionData {
   status: string;
   publishedAt: string | null;
   updatedAt: string;
+  publishedPeriod?: string;
   showFinalGrade: boolean;
   showBreakdown: boolean;
   showProvisionalNotice: boolean;
+  weightConfig: string | null;
   gradeItems: GradeItem[];
   sectionStudents: StudentRecord[];
 }
+
+export interface WeightConfig {
+  midterms: {
+    cp: number;
+    ea: number;
+    mpt: number;
+  };
+  finals: {
+    cp: number;
+    ea: number;
+    mpt: number;
+    cpt: number;
+  };
+}
+
+const DEFAULT_WEIGHTS: WeightConfig = {
+  midterms: { cp: 30, ea: 30, mpt: 40 },
+  finals: { cp: 30, ea: 30, mpt: 20, cpt: 20 },
+};
 
 export default function SectionDetailsPage() {
   const params = useParams();
@@ -79,6 +108,7 @@ export default function SectionDetailsPage() {
   const { toast } = useToast();
   const sectionId = params.id as string;
 
+  // Safe SSR initial state with 0ms SWR instant paint
   const [section, setSection] = useState<SectionData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
@@ -93,14 +123,18 @@ export default function SectionDetailsPage() {
   const [unpublishModalOpen, setUnpublishModalOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [reviewStudent, setReviewStudent] = useState<StudentRecord | null>(null);
+  const [resetModalOpen, setResetModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
 
-  // Settings form state
+  // Settings form state (including customizable weights)
   const [settingsForm, setSettingsForm] = useState({
     announcement: "",
     showFinalGrade: true,
     showBreakdown: true,
     showProvisionalNotice: true,
+    publishedPeriod: "FINALS",
+    weights: DEFAULT_WEIGHTS,
   });
 
   const loadSection = async () => {
@@ -108,18 +142,52 @@ export default function SectionDetailsPage() {
       const res = await fetch(`/api/professor/sections/${sectionId}`);
       if (!res.ok) {
         if (res.status === 401) {
-          router.push("/auth/login");
+          router.push("/admin_mis");
           return;
         }
         throw new Error("Failed to load section");
       }
       const data = await res.json();
       setSection(data.section);
+
+      if (data.section) {
+        setCachedData(`gv_sec_${sectionId}`, data.section);
+      }
+
+      let initialWeights = DEFAULT_WEIGHTS;
+      if (data.section.weightConfig) {
+        try {
+          const parsed =
+            typeof data.section.weightConfig === "string"
+              ? JSON.parse(data.section.weightConfig)
+              : data.section.weightConfig;
+          if (parsed?.midterms && parsed?.finals) {
+            initialWeights = {
+              midterms: {
+                cp: Number(parsed.midterms.cp) || 30,
+                ea: Number(parsed.midterms.ea) || 30,
+                mpt: Number(parsed.midterms.mpt) || 40,
+              },
+              finals: {
+                cp: Number(parsed.finals.cp) || 30,
+                ea: Number(parsed.finals.ea) || 30,
+                mpt: Number(parsed.finals.mpt) || 20,
+                cpt: Number(parsed.finals.cpt) || 20,
+              },
+            };
+          }
+        } catch (e) {
+          console.error("Error parsing weightConfig:", e);
+        }
+      }
+
       setSettingsForm({
         announcement: data.section.announcement || "",
         showFinalGrade: data.section.showFinalGrade,
         showBreakdown: data.section.showBreakdown,
         showProvisionalNotice: data.section.showProvisionalNotice,
+        publishedPeriod: data.section.publishedPeriod || "FINALS",
+        weights: initialWeights,
       });
       setIsLoading(false);
     } catch {
@@ -128,9 +196,49 @@ export default function SectionDetailsPage() {
     }
   };
 
+  // Immediate cache paint on mount + automatic real-time syncing
   useEffect(() => {
+    const cached = getCachedData<SectionData>(`gv_sec_${sectionId}`);
+    if (cached) {
+      setSection(cached);
+      setIsLoading(false);
+    }
     loadSection();
+
+    // Automatic real-time sync when switching back to tab
+    const handleFocus = () => loadSection();
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
   }, [sectionId]);
+
+  // Active weights extracted from section or defaults
+  const activeWeights: WeightConfig = useMemo(() => {
+    if (!section?.weightConfig) return DEFAULT_WEIGHTS;
+    try {
+      const parsed =
+        typeof section.weightConfig === "string"
+          ? JSON.parse(section.weightConfig)
+          : section.weightConfig;
+      if (parsed?.midterms && parsed?.finals) {
+        return {
+          midterms: {
+            cp: Number(parsed.midterms.cp) || 30,
+            ea: Number(parsed.midterms.ea) || 30,
+            mpt: Number(parsed.midterms.mpt) || 40,
+          },
+          finals: {
+            cp: Number(parsed.finals.cp) || 30,
+            ea: Number(parsed.finals.ea) || 30,
+            mpt: Number(parsed.finals.mpt) || 20,
+            cpt: Number(parsed.finals.cpt) || 20,
+          },
+        };
+      }
+      return DEFAULT_WEIGHTS;
+    } catch {
+      return DEFAULT_WEIGHTS;
+    }
+  }, [section?.weightConfig]);
 
   // Filtered & Sorted student list
   const filteredStudents = useMemo(() => {
@@ -158,6 +266,274 @@ export default function SectionDetailsPage() {
       });
   }, [section, searchQuery, sortField, sortAsc]);
 
+  // Helper to categorize grade items for the breakdown modal & grade computation
+  const categorizedItems = useMemo<{
+    cpMid: GradeItem[];
+    cpFin: GradeItem[];
+    eaMid: GradeItem[];
+    eaFin: GradeItem[];
+    mpt: GradeItem | null;
+    cpt: GradeItem | null;
+    bonus: GradeItem | null;
+  }>(() => {
+    if (!section) {
+      return { cpMid: [], cpFin: [], eaMid: [], eaFin: [], mpt: null, cpt: null, bonus: null };
+    }
+
+    const cpMid: GradeItem[] = [];
+    const cpFin: GradeItem[] = [];
+    const eaMid: GradeItem[] = [];
+    const eaFin: GradeItem[] = [];
+    let mpt: GradeItem | null = null;
+    let cpt: GradeItem | null = null;
+    let bonus: GradeItem | null = null;
+
+    section.gradeItems.forEach((item) => {
+      const cat = (item.category || "").toLowerCase();
+      const name = item.name.toLowerCase();
+
+      // Check MPT, CPT, Bonus first
+      if (name.includes("mpt") || cat.includes("major pt") || name.includes("midterm exam")) {
+        mpt = item;
+      } else if (name.includes("cpt") || cat.includes("culminating pt") || name.includes("final project")) {
+        cpt = item;
+      } else if (name.includes("bonus") || cat.includes("bonus")) {
+        bonus = item;
+      } else if (cat.includes("class participation") || name.startsWith("cp") || cat.includes("cp")) {
+        if (
+          cat.includes("post") ||
+          cat.includes("final") ||
+          name.includes("final") ||
+          name.includes("post") ||
+          /\b(8|9|10|11|12|13|14)\b/.test(name) ||
+          ["q4", "q5", "sw4"].some((prefix) => name.includes(prefix))
+        ) {
+          cpFin.push(item);
+        } else {
+          cpMid.push(item);
+        }
+      } else if (cat.includes("enabling") || name.startsWith("ea") || cat.includes("ea")) {
+        if (
+          cat.includes("post") ||
+          cat.includes("final") ||
+          name.includes("final") ||
+          name.includes("post") ||
+          /\b(8|9|10|11|12|13|14)\b/.test(name) ||
+          ["l6", "l7", "l8", "fp"].some((prefix) => name.includes(prefix))
+        ) {
+          eaFin.push(item);
+        } else {
+          eaMid.push(item);
+        }
+      }
+    });
+
+    return { cpMid, cpFin, eaMid, eaFin, mpt, cpt, bonus };
+  }, [section]);
+
+  // Standardized grade formatter: formats consistently as [Equivalent] ([Percentage]%)
+  // For failing marks (< 60% or R), it outputs "R (15.56%)" like the others
+  const formatGradeValue = (raw: string | null | undefined, fallbackPct?: number | null): string => {
+    if (!raw || raw === "-" || raw.trim() === "") {
+      if (fallbackPct !== null && fallbackPct !== undefined && !isNaN(fallbackPct)) {
+        const formattedPct = fallbackPct.toFixed(fallbackPct % 1 === 0 ? 1 : 2);
+        if (fallbackPct < 60.0) {
+          return `R (${formattedPct}%)`;
+        }
+        const equiv = calculateGradeEquivalent(fallbackPct, section?.subjectName || "");
+        return `${equiv} (${formattedPct}%)`;
+      }
+      return "-";
+    }
+
+    const s = raw.trim();
+    const upper = s.toUpperCase();
+
+    // Check if raw string contains a percentage e.g. "R (15.56%)", "58.90%", "2.5 (81.37%)"
+    const pctMatch = s.match(/([0-9]+(?:\.[0-9]+)?)\s*%/);
+    let pct: number | null = pctMatch ? parseFloat(pctMatch[1]) : (fallbackPct ?? null);
+
+    // If string is pure number e.g. "58.90"
+    if (pct === null) {
+      const num = parseFloat(s);
+      if (!isNaN(num) && num > 5.0) {
+        pct = num;
+      }
+    }
+
+    // Is it an R grade (either by percentage < 60 or explicitly marked R)?
+    const isR =
+      (pct !== null && pct < 60.0) ||
+      upper === "R" ||
+      upper === "REPEAT" ||
+      upper.startsWith("R ") ||
+      upper.startsWith("R(") ||
+      upper.startsWith("R-") ||
+      upper.includes("KINDLY CONTACT") ||
+      upper.includes("UNAVAILABLE") ||
+      upper.includes("UNAVAIBLE");
+
+    if (isR) {
+      if (pct !== null && !isNaN(pct)) {
+        const formattedPct = pct.toFixed(2);
+        return `R (${formattedPct}%)`;
+      }
+      return "R";
+    }
+
+    // Passing grade (>= 60)
+    if (pct !== null && !isNaN(pct)) {
+      if (!/^[0-9]\.[0-9]/.test(s)) {
+        const equiv = calculateGradeEquivalent(pct, section?.subjectName || "");
+        const formattedPct = pct.toFixed(2);
+        return `${equiv} (${formattedPct}%)`;
+      }
+    }
+
+    return s;
+  };
+
+  // Helper to extract Midterm Grade from StudentRecord (or dynamically compute using activeWeights)
+  const getStudentMidtermGrade = (ss: StudentRecord) => {
+    let raw: string | null = null;
+    let pct: number | null = null;
+
+    if (ss.remarks) {
+      const match = ss.remarks.match(/Midterm:\s*([^\s|]+(?:\s*\([^)]+\))?)/i);
+      if (match) {
+        raw = match[1].trim();
+      } else if (ss.remarks.includes("%") || /^[0-9]\.[0-9]/.test(ss.remarks)) {
+        raw = ss.remarks.split("|")[0].trim();
+      }
+    }
+
+    // Check if raw already has a percentage e.g. "R (15.56%)" or "58.90%"
+    if (raw) {
+      const match = raw.match(/([0-9]+(?:\.[0-9]+)?)\s*%/);
+      if (match) {
+        pct = parseFloat(match[1]);
+      }
+    }
+
+    // Try finding the midterm item from gradeRecords
+    const midItem = section?.gradeItems.find((g) =>
+      g.name.toLowerCase().includes("midterm grade") ||
+      g.category === "Term Grade" ||
+      g.category === "MIDTERM_GRADE"
+    );
+    if (midItem) {
+      const rec = ss.gradeRecords.find((r) => r.gradeItemId === midItem.id);
+      if (rec && rec.score !== null && rec.score !== undefined) {
+        if (pct === null) pct = rec.score;
+        if (!raw) raw = `${rec.score}%`;
+      }
+    }
+
+    // Fallback: compute from active weights
+    if (pct === null) {
+      let cpScore = 0, cpHps = 0, eaScore = 0, eaHps = 0;
+      categorizedItems.cpMid.forEach((it) => {
+        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === it.id);
+        if (r && r.score !== null && r.score !== undefined) cpScore += r.score;
+        cpHps += it.maxScore;
+      });
+      categorizedItems.eaMid.forEach((it) => {
+        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === it.id);
+        if (r && r.score !== null && r.score !== undefined) eaScore += r.score;
+        eaHps += it.maxScore;
+      });
+      let mptScore = 0, mptHps = categorizedItems.mpt?.maxScore || 0;
+      if (categorizedItems.mpt) {
+        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === categorizedItems.mpt!.id);
+        if (r && r.score !== null && r.score !== undefined) mptScore = r.score;
+      }
+      if (cpHps > 0 || eaHps > 0 || mptHps > 0) {
+        const cpPart = cpHps > 0 ? (cpScore / cpHps) * activeWeights.midterms.cp : 0;
+        const eaPart = eaHps > 0 ? (eaScore / eaHps) * activeWeights.midterms.ea : 0;
+        const mptPart = mptHps > 0 ? (mptScore / mptHps) * activeWeights.midterms.mpt : 0;
+        const total = cpPart + eaPart + mptPart;
+        if (total > 0) {
+          pct = Number(total.toFixed(2));
+          if (!raw) raw = `${pct}%`;
+        }
+      }
+    }
+
+    return formatGradeValue(raw, pct);
+  };
+
+  // Helper to extract Final Grade (or dynamically compute using activeWeights)
+  const getStudentFinalGrade = (ss: StudentRecord) => {
+    let raw = ss.finalGrade && ss.finalGrade !== "-" ? ss.finalGrade : null;
+    let pct: number | null = null;
+
+    // Check if raw already has a percentage e.g. "R (15.56%)" or "3.0 (83.7%)"
+    if (raw) {
+      const match = raw.match(/([0-9]+(?:\.[0-9]+)?)\s*%/);
+      if (match) {
+        pct = parseFloat(match[1]);
+      }
+    }
+
+    // Try finding final grade percentage from gradeItems
+    if (pct === null) {
+      const finItem = section?.gradeItems.find((g) =>
+        g.name.toLowerCase().includes("final grade (%)") ||
+        g.name.toLowerCase().includes("final percentage") ||
+        g.name.toLowerCase() === "final grade"
+      );
+      if (finItem) {
+        const rec = ss.gradeRecords.find((r) => r.gradeItemId === finItem.id);
+        if (rec && rec.score !== null && rec.score !== undefined) {
+          pct = rec.score;
+        }
+      }
+    }
+
+    // Fallback: compute from active weights
+    if (pct === null) {
+      let cpScore = 0, cpHps = 0, eaScore = 0, eaHps = 0;
+      [...categorizedItems.cpMid, ...categorizedItems.cpFin].forEach((it) => {
+        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === it.id);
+        if (r && r.score !== null && r.score !== undefined) cpScore += r.score;
+        cpHps += it.maxScore;
+      });
+      [...categorizedItems.eaMid, ...categorizedItems.eaFin].forEach((it) => {
+        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === it.id);
+        if (r && r.score !== null && r.score !== undefined) eaScore += r.score;
+        eaHps += it.maxScore;
+      });
+      let mptScore = 0, mptHps = categorizedItems.mpt?.maxScore || 0;
+      if (categorizedItems.mpt) {
+        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === categorizedItems.mpt!.id);
+        if (r && r.score !== null && r.score !== undefined) mptScore = r.score;
+      }
+      let cptScore = 0, cptHps = categorizedItems.cpt?.maxScore || 0;
+      if (categorizedItems.cpt) {
+        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === categorizedItems.cpt!.id);
+        if (r && r.score !== null && r.score !== undefined) cptScore = r.score;
+      }
+      let bonus = 0;
+      if (categorizedItems.bonus) {
+        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === categorizedItems.bonus!.id);
+        if (r && r.score !== null && r.score !== undefined) bonus = r.score;
+      }
+      if (cpHps > 0 || eaHps > 0) {
+        const cpPart = cpHps > 0 ? (cpScore / cpHps) * activeWeights.finals.cp : 0;
+        const eaPart = eaHps > 0 ? (eaScore / eaHps) * activeWeights.finals.ea : 0;
+        const mptPart = mptHps > 0 ? (mptScore / mptHps) * activeWeights.finals.mpt : 0;
+        const cptPart = cptHps > 0 ? (cptScore / cptHps) * activeWeights.finals.cpt : 0;
+        const total = cpPart + eaPart + mptPart + cptPart + bonus;
+        if (total > 0) {
+          pct = Number(total.toFixed(2));
+          if (!raw) raw = `${pct}%`;
+        }
+      }
+    }
+
+    return formatGradeValue(raw, pct);
+  };
+
   // Handle Publish
   const handlePublish = async () => {
     setIsSubmitting(true);
@@ -165,20 +541,52 @@ export default function SectionDetailsPage() {
       const res = await fetch(`/api/professor/sections/${sectionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "PUBLISHED" }),
+        body: JSON.stringify({ 
+          status: "PUBLISHED",
+          publishedPeriod: settingsForm.publishedPeriod,
+        }),
       });
       if (!res.ok) throw new Error("Publishing failed");
       toast({
         type: "success",
         title: "Grades Published Successfully",
-        message: `Section ${section?.sectionCode} is now live. Enrolled students can view their reports.`,
+        message: `Section ${section?.sectionCode} is now live for students (${
+          settingsForm.publishedPeriod === "MIDTERMS"
+            ? "Midterm Period (Weeks 1–7)"
+            : "Finals Period (Weeks 1–13 Overall)"
+        }).`,
       });
+      invalidateCache("prof_sections");
+      invalidateCache("admin_sections");
       setPublishModalOpen(false);
       await loadSection();
     } catch (e: any) {
       toast({ type: "error", title: "Publication Failed", message: e.message });
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // Quick period change on the section overview header
+  const handleQuickPeriodChange = async (newPeriod: string) => {
+    try {
+      const res = await fetch(`/api/professor/sections/${sectionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ publishedPeriod: newPeriod }),
+      });
+      if (!res.ok) throw new Error("Failed to update published period");
+      toast({
+        type: "success",
+        title: "Publishing Period Updated",
+        message: `Student portal view is now set to ${
+          newPeriod === "MIDTERMS" ? "Midterm Period (Weeks 1–7)" : "Finals Period (Weeks 1–13 Overall)"
+        }.`,
+      });
+      setSettingsForm((prev) => ({ ...prev, publishedPeriod: newPeriod }));
+      await loadSection();
+    } catch (e: any) {
+      toast({ type: "error", title: "Update Failed", message: e.message });
     }
   };
 
@@ -197,6 +605,8 @@ export default function SectionDetailsPage() {
         title: "Section Unpublished",
         message: "Status reverted to Draft. Student access is temporarily paused.",
       });
+      invalidateCache("prof_sections");
+      invalidateCache("admin_sections");
       setUnpublishModalOpen(false);
       await loadSection();
     } catch (e: any) {
@@ -214,7 +624,14 @@ export default function SectionDetailsPage() {
       const res = await fetch(`/api/professor/sections/${sectionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settingsForm),
+        body: JSON.stringify({
+          announcement: settingsForm.announcement,
+          showFinalGrade: settingsForm.showFinalGrade,
+          showBreakdown: settingsForm.showBreakdown,
+          showProvisionalNotice: settingsForm.showProvisionalNotice,
+          publishedPeriod: settingsForm.publishedPeriod,
+          weightConfig: JSON.stringify(settingsForm.weights),
+        }),
       });
       if (!res.ok) throw new Error("Failed to update settings");
       toast({ type: "success", title: "Settings Saved", message: "Section visibility updated." });
@@ -227,11 +644,84 @@ export default function SectionDetailsPage() {
     }
   };
 
+  // Handle Reset Section (clears all students, grade items, and records to re-import)
+  const handleResetSection = async () => {
+    setIsResetting(true);
+    try {
+      const res = await fetch(`/api/professor/sections/${sectionId}/reset`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to reset section");
+      toast({
+        type: "success",
+        title: "Section Reset Successful",
+        message: data.message || "Section data cleared. Ready for re-import.",
+      });
+      invalidateCache("prof_sections");
+      invalidateCache("admin_sections");
+      setResetModalOpen(false);
+      await loadSection();
+    } catch (e: any) {
+      toast({ type: "error", title: "Reset Failed", message: e.message });
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   if (isLoading) {
     return (
-      <div className="max-w-7xl mx-auto px-4 py-16 text-center text-sm text-slate-500">
-        <div className="inline-block animate-spin w-8 h-8 border-4 border-slate-300 border-t-slate-900 rounded-full mb-3"></div>
-        <p>Loading section gradebook...</p>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6 animate-pulse">
+        <div className="w-28 h-4 bg-slate-200 rounded" />
+        <div className="border border-slate-200/90 shadow-xs rounded-2xl bg-white p-6 sm:p-7 space-y-5">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-5">
+            <div className="space-y-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-24 h-6 bg-slate-200 rounded-md" />
+                <div className="w-28 h-4 bg-slate-100 rounded" />
+                <div className="w-16 h-5 bg-slate-100 rounded-full" />
+              </div>
+              <div className="w-72 sm:w-96 h-8 bg-slate-200 rounded-lg" />
+              <div className="w-64 h-4 bg-slate-100 rounded" />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="w-28 h-9 bg-slate-200 rounded-xl" />
+              ))}
+            </div>
+          </div>
+          <div className="pt-4 border-t border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="p-3 rounded-xl bg-slate-50 space-y-2">
+                <div className="w-16 h-3 bg-slate-200 rounded" />
+                <div className="w-24 h-6 bg-slate-200 rounded-md" />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="border border-slate-200/90 shadow-xs rounded-2xl bg-white p-6 space-y-4">
+          <div className="flex flex-col sm:flex-row justify-between gap-4">
+            <div className="w-64 h-10 bg-slate-100 rounded-xl" />
+            <div className="w-32 h-10 bg-slate-100 rounded-xl" />
+          </div>
+          <div className="space-y-3 pt-3">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div
+                key={i}
+                className="h-14 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between px-4"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-24 h-4 bg-slate-200 rounded" />
+                  <div className="w-40 h-4 bg-slate-200 rounded" />
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-5 bg-slate-200 rounded-md" />
+                  <div className="w-20 h-8 bg-slate-200 rounded-lg" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
@@ -266,23 +756,54 @@ export default function SectionDetailsPage() {
       </div>
 
       {/* Section Header Card */}
-      <Card className="border-slate-200 shadow-sm">
-        <CardHeader className="bg-slate-900 text-white p-6 sm:p-8">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <Card className="border border-slate-200/90 shadow-xs overflow-hidden rounded-2xl bg-white">
+        <div className="p-6 sm:p-7 border-b border-slate-100 relative">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-5">
             <div>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="font-mono text-xs px-2.5 py-0.5 rounded bg-slate-800 text-teal-400 font-bold border border-slate-700">
+              <div className="flex items-center gap-2.5 mb-2 flex-wrap">
+                <span className="font-mono text-xs px-2.5 py-0.5 rounded-md bg-slate-100 text-slate-800 font-semibold tracking-wider border border-slate-200">
                   {section.sectionCode}
                 </span>
-                <span className="text-xs text-slate-300">&bull; {section.sectionName}</span>
+                <span className="text-xs text-slate-600 font-medium">&bull; <strong className="text-slate-800 font-semibold">{section.sectionName}</strong></span>
                 <StatusChip status={section.status} />
+
+                {/* Published Period Toggle: Midterm vs Finals */}
+                {isPublished && (
+                  <div className="inline-flex items-center gap-1 p-0.5 rounded-lg bg-slate-100 border border-slate-200 text-xs">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase px-1.5">Posting:</span>
+                    <button
+                      type="button"
+                      onClick={() => handleQuickPeriodChange("MIDTERMS")}
+                      className={`px-2.5 py-0.5 rounded-md text-[11px] font-semibold transition-all cursor-pointer ${
+                        section.publishedPeriod === "MIDTERMS"
+                          ? "bg-blue-600 text-white shadow-2xs font-bold"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                      title="Only publish Midterm Grade (Weeks 1-7) to students"
+                    >
+                      Midterm Period (Weeks 1–7)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleQuickPeriodChange("FINALS")}
+                      className={`px-2.5 py-0.5 rounded-md text-[11px] font-semibold transition-all cursor-pointer ${
+                        section.publishedPeriod !== "MIDTERMS"
+                          ? "bg-purple-600 text-white shadow-2xs font-bold"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                      title="Publish Cumulative Final Grade (Weeks 1-13 Overall) to students"
+                    >
+                      Finals Period (Weeks 1–13 Overall)
+                    </button>
+                  </div>
+                )}
               </div>
 
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
                 {section.subjectName}
               </h1>
 
-              <p className="text-xs text-slate-300 mt-1">
+              <p className="text-xs text-slate-500 mt-1 font-medium">
                 {section.term} &bull; Academic Year {section.academicYear} &bull; Last updated {formatDate(section.updatedAt)}
               </p>
             </div>
@@ -290,15 +811,15 @@ export default function SectionDetailsPage() {
             {/* Action Buttons */}
             <div className="flex flex-wrap items-center gap-2">
               <Link href={`/professor/sections/${section.id}/import`}>
-                <Button size="sm" variant="secondary" className="gap-1.5 text-xs">
-                  <Upload className="w-3.5 h-3.5" />
+                <Button size="sm" variant="outline" className="gap-1.5 text-xs font-semibold">
+                  <Upload className="w-3.5 h-3.5 text-slate-600" />
                   <span>Import Sheet</span>
                 </Button>
               </Link>
 
               <Link href={`/professor/sections/${section.id}/credentials`}>
-                <Button size="sm" variant="secondary" className="gap-1.5 text-xs">
-                  <KeyRound className="w-3.5 h-3.5" />
+                <Button size="sm" variant="outline" className="gap-1.5 text-xs font-semibold">
+                  <KeyRound className="w-3.5 h-3.5 text-slate-600" />
                   <span>Credentials ({section.sectionStudents.length})</span>
                 </Button>
               </Link>
@@ -307,10 +828,21 @@ export default function SectionDetailsPage() {
                 size="sm"
                 variant="outline"
                 onClick={() => setSettingsModalOpen(true)}
-                className="gap-1.5 text-xs bg-slate-800 text-white border-slate-700 hover:bg-slate-700"
+                className="gap-1.5 text-xs font-semibold"
               >
-                <Settings className="w-3.5 h-3.5" />
+                <Settings className="w-3.5 h-3.5 text-slate-600" />
                 <span>Settings</span>
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setResetModalOpen(true)}
+                className="gap-1.5 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200"
+                title="Clear all students and grades to re-import"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-rose-500" />
+                <span>Reset Section</span>
               </Button>
 
               {isPublished ? (
@@ -318,7 +850,7 @@ export default function SectionDetailsPage() {
                   size="sm"
                   variant="destructive"
                   onClick={() => setUnpublishModalOpen(true)}
-                  className="gap-1.5 text-xs shadow-sm font-semibold"
+                  className="gap-1.5 text-xs font-semibold shadow-xs"
                 >
                   <Lock className="w-3.5 h-3.5" />
                   <span>Unpublish</span>
@@ -326,8 +858,9 @@ export default function SectionDetailsPage() {
               ) : (
                 <Button
                   size="sm"
+                  variant="primary"
                   onClick={() => setPublishModalOpen(true)}
-                  className="gap-1.5 text-xs bg-teal-600 hover:bg-teal-700 text-white shadow-sm font-semibold"
+                  className="gap-1.5 text-xs font-semibold shadow-xs"
                 >
                   <CheckCircle2 className="w-3.5 h-3.5" />
                   <span>Publish Grades</span>
@@ -335,16 +868,16 @@ export default function SectionDetailsPage() {
               )}
             </div>
           </div>
-        </CardHeader>
+        </div>
 
         {section.announcement && (
-          <div className="bg-teal-50 border-b border-teal-100 px-6 py-3 text-xs text-teal-900 flex items-center justify-between">
+          <div className="bg-amber-50/70 border-b border-amber-200/80 px-6 py-2.5 text-xs text-amber-900 flex items-center justify-between font-normal">
             <span>
-              <strong>Student Announcement: </strong> {section.announcement}
+              <strong className="font-semibold text-amber-950">Student Announcement: </strong> {section.announcement}
             </span>
             <button
               onClick={() => setSettingsModalOpen(true)}
-              className="text-teal-700 underline text-[11px] font-medium"
+              className="text-amber-800 font-semibold underline text-[11px] hover:text-amber-950 ml-4 cursor-pointer"
             >
               Edit
             </button>
@@ -415,115 +948,112 @@ export default function SectionDetailsPage() {
           </div>
 
           {/* Export Dropdown / Buttons */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
+            <a href="/template.xlsx" download="class_record_template.xlsx" title="Download Official Class Record Template">
+              <Button size="sm" variant="outline" className="gap-1.5 text-xs text-slate-700 bg-white hover:bg-slate-50">
+                <FileSpreadsheet className="w-3.5 h-3.5 text-blue-600" />
+                <span>Download Template</span>
+              </Button>
+            </a>
             <a href={`/api/professor/sections/${section.id}/export?format=xlsx`} download>
               <Button size="sm" variant="outline" className="gap-1.5 text-xs">
                 <Download className="w-3.5 h-3.5 text-slate-600" />
-                <span>Export XLSX</span>
-              </Button>
-            </a>
-            <a href={`/api/professor/sections/${section.id}/export?format=csv`} download>
-              <Button size="sm" variant="outline" className="gap-1.5 text-xs">
-                <Download className="w-3.5 h-3.5 text-slate-600" />
-                <span>CSV</span>
+                <span>Export Sheet</span>
               </Button>
             </a>
           </div>
         </div>
       </div>
 
-      {/* Gradebook Interactive Spreadsheet Table */}
-      <Card className="border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto max-h-[600px] relative">
+      {/* Student Roster Table */}
+      <Card className="border border-slate-200/90 shadow-xs overflow-hidden rounded-xl bg-white">
+        <div className="overflow-x-auto relative">
           <table className="w-full text-left text-xs border-collapse">
-            <thead className="bg-slate-100/90 backdrop-blur sticky top-0 z-20 border-b border-slate-200 uppercase font-semibold text-slate-700 tracking-wider">
+            <thead className="bg-slate-50 text-slate-700 sticky top-0 z-20 border-b border-slate-200 text-xs font-semibold">
               <tr>
-                <th className="px-4 py-3 sticky left-0 bg-slate-100 z-30 shadow-[1px_0_0_0_#cbd5e1] min-w-[120px]">
+                <th className="px-5 py-3.5 min-w-[130px] text-slate-700 font-semibold">
                   Student ID
                 </th>
-                <th className="px-4 py-3 sticky left-[120px] bg-slate-100 z-30 shadow-[1px_0_0_0_#cbd5e1] min-w-[180px]">
+                <th className="px-5 py-3.5 min-w-[200px] text-slate-700 font-semibold">
                   Student Name
                 </th>
-                {section.gradeItems.map((item) => (
-                  <th key={item.id} className="px-4 py-3 text-right min-w-[130px] border-l border-slate-200/60">
-                    <div>{item.name}</div>
-                    <div className="text-[10px] text-slate-400 font-normal lowercase">max: {item.maxScore}</div>
-                  </th>
-                ))}
-                <th className="px-4 py-3 text-right min-w-[110px] border-l border-slate-200 bg-slate-200/50 font-bold text-slate-900">
+                <th className="px-5 py-3.5 min-w-[140px] text-slate-700 font-semibold">
+                  Midterm Grade
+                </th>
+                <th className="px-5 py-3.5 min-w-[140px] font-bold text-blue-900 bg-blue-50/40">
                   Final Grade
                 </th>
-                <th className="px-4 py-3 min-w-[110px] border-l border-slate-200/60">Status</th>
-                <th className="px-4 py-3 min-w-[160px] border-l border-slate-200/60">Remarks</th>
-                <th className="px-4 py-3 text-center min-w-[70px] border-l border-slate-200/60">Action</th>
+                <th className="px-5 py-3.5 text-center min-w-[130px] text-slate-600">
+                  Action
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 bg-white">
               {filteredStudents.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={section.gradeItems.length + 5}
-                    className="px-6 py-12 text-center text-slate-400"
+                    colSpan={5}
+                    className="px-6 py-12 text-center text-slate-400 font-medium"
                   >
                     No student records found matching &ldquo;{searchQuery}&rdquo;.
                   </td>
                 </tr>
               ) : (
                 filteredStudents.map((ss) => {
-                  const recordsMap = new Map<string, number | null>();
-                  ss.gradeRecords.forEach((r) => recordsMap.set(r.gradeItemId, r.score));
+                  const midtermGrade = getStudentMidtermGrade(ss);
+                  const finalGrade = getStudentFinalGrade(ss);
 
                   return (
                     <tr
                       key={ss.id}
                       onClick={() => setReviewStudent(ss)}
-                      className="hover:bg-slate-50 cursor-pointer transition-colors group"
+                      className="hover:bg-slate-50/80 cursor-pointer transition-colors group"
                     >
-                      <td className="px-4 py-3 font-mono font-medium text-slate-900 sticky left-0 bg-white group-hover:bg-slate-50 z-10 shadow-[1px_0_0_0_#e2e8f0]">
+                      <td className="px-5 py-3.5 font-mono font-semibold text-slate-800">
                         {ss.student.studentNumber}
                       </td>
-                      <td className="px-4 py-3 font-medium text-slate-900 sticky left-[120px] bg-white group-hover:bg-slate-50 z-10 shadow-[1px_0_0_0_#e2e8f0] truncate max-w-[200px]">
+                      <td className="px-5 py-3.5 font-semibold text-slate-900 truncate max-w-[220px]">
                         {ss.student.displayName}
                       </td>
-
-                      {section.gradeItems.map((item) => {
-                        const score = recordsMap.get(item.id);
-                        return (
-                          <td
-                            key={item.id}
-                            className="px-4 py-3 text-right font-mono border-l border-slate-100"
-                          >
-                            {score !== undefined && score !== null ? (
-                              <span className="text-slate-800">{score}</span>
-                            ) : (
-                              <span className="text-slate-300">—</span>
-                            )}
-                          </td>
-                        );
-                      })}
-
-                      <td className="px-4 py-3 text-right font-mono font-bold text-slate-900 border-l border-slate-200 bg-slate-50/50">
-                        {ss.finalGrade || "—"}
+                      <td className="px-5 py-3.5 font-mono font-medium text-slate-700">
+                        {midtermGrade !== "-" ? (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-md font-semibold text-xs border ${
+                            midtermGrade.startsWith("R")
+                              ? "bg-amber-50 text-amber-900 border-amber-200"
+                              : "bg-slate-100 text-slate-800 border-slate-200"
+                          }`}>
+                            {midtermGrade}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-mono">-</span>
+                        )}
                       </td>
-
-                      <td className="px-4 py-3 border-l border-slate-100">
-                        <StatusChip status={ss.finalGradeStatus || "PROVISIONAL"} />
+                      <td className="px-5 py-3.5 font-mono font-bold text-blue-900 bg-blue-50/20">
+                        {finalGrade !== "-" ? (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-md font-bold text-xs border ${
+                            finalGrade.startsWith("R")
+                              ? "bg-amber-50 text-amber-900 border-amber-200"
+                              : "bg-blue-50 text-blue-900 border-blue-200"
+                          }`}>
+                            {finalGrade}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-mono">-</span>
+                        )}
                       </td>
-
-                      <td className="px-4 py-3 text-slate-500 truncate max-w-[160px] border-l border-slate-100">
-                        {ss.remarks || "—"}
-                      </td>
-
-                      <td className="px-4 py-3 text-center border-l border-slate-100">
-                        <button
+                      <td className="px-5 py-3.5 text-center">
+                        <Button
+                          size="sm"
+                          variant="outline"
                           onClick={(e) => {
                             e.stopPropagation();
                             setReviewStudent(ss);
                           }}
-                          className="p-1 rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
+                          className="gap-1.5 text-xs text-blue-700 hover:text-blue-800 bg-blue-50/50 hover:bg-blue-100/80 border-blue-200 shadow-none font-medium"
                         >
                           <Eye className="w-3.5 h-3.5" />
-                        </button>
+                          <span>View Breakdown</span>
+                        </Button>
                       </td>
                     </tr>
                   );
@@ -534,8 +1064,8 @@ export default function SectionDetailsPage() {
         </div>
 
         <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
-          <span>Showing {filteredStudents.length} of {section.sectionStudents.length} students</span>
-          <span className="font-mono text-[11px]">Desktop table with sticky identifiers</span>
+          <span>Showing {filteredStudents.length} of {section.sectionStudents.length} enrolled students</span>
+          <span className="text-[11px] text-slate-400">Click any student row to view full assessment breakdown</span>
         </div>
       </Card>
 
@@ -569,9 +1099,52 @@ export default function SectionDetailsPage() {
             </div>
           </div>
 
+          <div className="space-y-2 pt-2 border-t border-slate-100">
+            <h4 className="font-semibold text-slate-900">Choose Academic Period to Publish:</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setSettingsForm({ ...settingsForm, publishedPeriod: "MIDTERMS" })}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  settingsForm.publishedPeriod === "MIDTERMS"
+                    ? "bg-blue-50 border-blue-400 ring-2 ring-blue-500/20 text-blue-950"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                <div className="font-bold text-xs flex items-center justify-between">
+                  <span>Midterm Period</span>
+                  <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">Weeks 1–7 coursework only</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSettingsForm({ ...settingsForm, publishedPeriod: "FINALS" })}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  settingsForm.publishedPeriod !== "MIDTERMS"
+                    ? "bg-purple-50 border-purple-400 ring-2 ring-purple-500/20 text-purple-950"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                <div className="font-bold text-xs flex items-center justify-between">
+                  <span>Finals Period</span>
+                  <span className="w-2 h-2 rounded-full bg-purple-500"></span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">Weeks 1–13 overall coursework</p>
+              </button>
+            </div>
+          </div>
+
           <div className="space-y-2">
             <h4 className="font-semibold text-slate-900">Fields Visible to Students:</h4>
             <ul className="space-y-1.5 text-slate-600">
+              <li className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-teal-600"></span>
+                Publishing Mode: <strong>{
+                  settingsForm.publishedPeriod === "MIDTERMS" ? "Midterm Period (Weeks 1–7)" : "Finals Period (Weeks 1–13 Overall)"
+                }</strong>
+              </li>
               <li className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-teal-600"></span>
                 Final Grade / Average: <strong>{section.showFinalGrade ? "Visible" : "Hidden"}</strong>
@@ -642,8 +1215,9 @@ export default function SectionDetailsPage() {
       <Modal
         isOpen={settingsModalOpen}
         onClose={() => setSettingsModalOpen(false)}
-        title="Section Settings & Visibility"
-        description="Configure announcement and student-visible elements."
+        title="Section Settings & Percentage Allocation"
+        description="Configure student announcement, visibility, and component percentage weights."
+        maxWidth="2xl"
       >
         <form onSubmit={handleSaveSettings} className="space-y-4 text-xs">
           <div>
@@ -657,6 +1231,279 @@ export default function SectionDetailsPage() {
               placeholder="e.g. Grades updated October 21. Contact me for consultation."
               className="w-full p-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
+          </div>
+
+          {/* Percentage Allocation Matrix (matches class record Excel template) */}
+          <div className="pt-2 border-t border-slate-100 space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="font-bold text-slate-800 uppercase tracking-wider text-[11px] block">
+                  Percentage Allocation
+                </span>
+                <span className="text-slate-500 text-[11px]">
+                  Configure weighted percentages for Midterms and Finals (target: 100%)
+                </span>
+              </div>
+            </div>
+
+            <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs">
+              <table className="w-full text-center text-xs">
+                <thead className="bg-slate-50 text-slate-700 font-bold border-b border-slate-200 text-[11px]">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Components</th>
+                    <th className="px-3 py-2">CP (%)</th>
+                    <th className="px-3 py-2">EA (%)</th>
+                    <th className="px-3 py-2">MPT (%)</th>
+                    <th className="px-3 py-2">CPT (%)</th>
+                    <th className="px-3 py-2">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium">
+                  {/* Midterm Grade Row */}
+                  <tr>
+                    <td className="px-3 py-2 text-left font-semibold text-slate-800">
+                      Midterm Grade
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={settingsForm.weights.midterms.cp}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            weights: {
+                              ...settingsForm.weights,
+                              midterms: {
+                                ...settingsForm.weights.midterms,
+                                cp: Number(e.target.value) || 0,
+                              },
+                            },
+                          })
+                        }
+                        className="w-16 px-2 py-1 text-center font-mono font-bold text-xs rounded border border-slate-300 focus:ring-1 focus:ring-slate-900 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={settingsForm.weights.midterms.ea}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            weights: {
+                              ...settingsForm.weights,
+                              midterms: {
+                                ...settingsForm.weights.midterms,
+                                ea: Number(e.target.value) || 0,
+                              },
+                            },
+                          })
+                        }
+                        className="w-16 px-2 py-1 text-center font-mono font-bold text-xs rounded border border-slate-300 focus:ring-1 focus:ring-slate-900 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={settingsForm.weights.midterms.mpt}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            weights: {
+                              ...settingsForm.weights,
+                              midterms: {
+                                ...settingsForm.weights.midterms,
+                                mpt: Number(e.target.value) || 0,
+                              },
+                            },
+                          })
+                        }
+                        className="w-16 px-2 py-1 text-center font-mono font-bold text-xs rounded border border-slate-300 focus:ring-1 focus:ring-slate-900 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5 text-slate-300 font-mono">-</td>
+                    <td className="px-3 py-2 font-mono font-bold">
+                      {(() => {
+                        const midTotal =
+                          settingsForm.weights.midterms.cp +
+                          settingsForm.weights.midterms.ea +
+                          settingsForm.weights.midterms.mpt;
+                        return (
+                          <span
+                            className={
+                              midTotal === 100
+                                ? "text-emerald-700 font-bold"
+                                : "text-amber-600 font-bold"
+                            }
+                          >
+                            {midTotal}%
+                          </span>
+                        );
+                      })()}
+                    </td>
+                  </tr>
+
+                  {/* Final Grade Row */}
+                  <tr>
+                    <td className="px-3 py-2 text-left font-semibold text-slate-800">
+                      Final Grade
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={settingsForm.weights.finals.cp}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            weights: {
+                              ...settingsForm.weights,
+                              finals: {
+                                ...settingsForm.weights.finals,
+                                cp: Number(e.target.value) || 0,
+                              },
+                            },
+                          })
+                        }
+                        className="w-16 px-2 py-1 text-center font-mono font-bold text-xs rounded border border-slate-300 focus:ring-1 focus:ring-slate-900 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={settingsForm.weights.finals.ea}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            weights: {
+                              ...settingsForm.weights,
+                              finals: {
+                                ...settingsForm.weights.finals,
+                                ea: Number(e.target.value) || 0,
+                              },
+                            },
+                          })
+                        }
+                        className="w-16 px-2 py-1 text-center font-mono font-bold text-xs rounded border border-slate-300 focus:ring-1 focus:ring-slate-900 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={settingsForm.weights.finals.mpt}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            weights: {
+                              ...settingsForm.weights,
+                              finals: {
+                                ...settingsForm.weights.finals,
+                                mpt: Number(e.target.value) || 0,
+                              },
+                            },
+                          })
+                        }
+                        className="w-16 px-2 py-1 text-center font-mono font-bold text-xs rounded border border-slate-300 focus:ring-1 focus:ring-slate-900 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={settingsForm.weights.finals.cpt}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            weights: {
+                              ...settingsForm.weights,
+                              finals: {
+                                ...settingsForm.weights.finals,
+                                cpt: Number(e.target.value) || 0,
+                              },
+                            },
+                          })
+                        }
+                        className="w-16 px-2 py-1 text-center font-mono font-bold text-xs rounded border border-slate-300 focus:ring-1 focus:ring-slate-900 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-3 py-2 font-mono font-bold">
+                      {(() => {
+                        const finTotal =
+                          settingsForm.weights.finals.cp +
+                          settingsForm.weights.finals.ea +
+                          settingsForm.weights.finals.mpt +
+                          settingsForm.weights.finals.cpt;
+                        return (
+                          <span
+                            className={
+                              finTotal === 100
+                                ? "text-emerald-700 font-bold"
+                                : "text-amber-600 font-bold"
+                            }
+                          >
+                            {finTotal}%
+                          </span>
+                        );
+                      })()}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="space-y-2 pt-2 border-t border-slate-100">
+            <label className="block text-xs font-bold text-slate-800">
+              Publishing Period Visibility
+            </label>
+            <p className="text-[11px] text-slate-500">
+              Control what period is displayed to students when they access their report.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setSettingsForm({ ...settingsForm, publishedPeriod: "MIDTERMS" })}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  settingsForm.publishedPeriod === "MIDTERMS"
+                    ? "bg-blue-50 border-blue-400 ring-2 ring-blue-500/20 text-blue-950 font-medium"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                <div className="font-bold text-xs flex items-center justify-between">
+                  <span>Midterm Period</span>
+                  <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">Weeks 1–7 coursework only</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSettingsForm({ ...settingsForm, publishedPeriod: "FINALS" })}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  settingsForm.publishedPeriod !== "MIDTERMS"
+                    ? "bg-purple-50 border-purple-400 ring-2 ring-purple-500/20 text-purple-950 font-medium"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                <div className="font-bold text-xs flex items-center justify-between">
+                  <span>Finals Period</span>
+                  <span className="w-2 h-2 rounded-full bg-purple-500"></span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">Weeks 1–13 overall coursework</p>
+              </button>
+            </div>
           </div>
 
           <div className="space-y-2.5 pt-2 border-t border-slate-100">
@@ -713,60 +1560,1013 @@ export default function SectionDetailsPage() {
         </form>
       </Modal>
 
-      {/* Single Student Detail Modal */}
-      {reviewStudent && (
+      {/* Reset Section Confirmation Modal */}
+      <Modal
+        isOpen={resetModalOpen}
+        onClose={() => setResetModalOpen(false)}
+        title="Reset Section Data"
+        description={`Clear all records in ${section.sectionCode} - ${section.sectionName}`}
+      >
+        <div className="space-y-4 text-xs">
+          <div className="rounded-lg bg-rose-50 border border-rose-200 p-4 text-rose-900 space-y-2">
+            <h4 className="font-bold flex items-center gap-1.5 text-sm text-rose-800">
+              <AlertTriangle className="w-4 h-4 text-rose-600" />
+              Permanent Action Warning
+            </h4>
+            <p className="text-xs leading-relaxed text-rose-700">
+              Resetting this section will <strong>permanently delete</strong> all{" "}
+              <strong>{section.sectionStudents.length} student records</strong>, all{" "}
+              <strong>{section.gradeItems.length} grade items</strong>, scores, and import logs.
+            </p>
+            <p className="text-xs text-rose-700">
+              The section status will revert to <strong>DRAFT</strong> so you can cleanly re-import your official{" "}
+              <code className="font-mono font-bold">Class Record Template</code> workbook.
+            </p>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 space-y-1 text-xs">
+            <div className="font-semibold text-slate-800">What will happen:</div>
+            <ul className="list-disc list-inside space-y-0.5 text-slate-600 pl-1">
+              <li>Section code, course details, and professor assignment remain intact</li>
+              <li>Existing students and gradebook items will be cleared</li>
+              <li>Section reverts to Draft state ready for a clean re-import</li>
+            </ul>
+          </div>
+
+          <div className="pt-4 flex items-center justify-end gap-2 border-t border-slate-100">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setResetModalOpen(false)}
+              disabled={isResetting}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handleResetSection}
+              isLoading={isResetting}
+              className="gap-1.5 font-semibold bg-rose-600 hover:bg-rose-700"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Confirm &amp; Reset Section</span>
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Student Assessment Breakdown Pop-up Modal */}
+      {reviewStudent && section && (
         <Modal
           isOpen={true}
           onClose={() => setReviewStudent(null)}
-          title={`Student: ${reviewStudent.student.displayName}`}
-          description={`ID: ${reviewStudent.student.studentNumber} • Section: ${section.sectionCode}`}
+          title="Student Grade Breakdown & Performance Analytics"
+          description={`${reviewStudent.student.displayName} • ${reviewStudent.student.studentNumber} • Section ${section.sectionName} • ${section.sectionCode}`}
+          maxWidth="5xl"
         >
-          <div className="space-y-4 text-xs">
-            <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-200">
-              <div>
-                <span className="text-slate-500 text-[11px]">Final Grade Standing:</span>
-                <div className="text-lg font-bold text-slate-900 mt-0.5">
-                  {reviewStudent.finalGrade || "Not Computed"}
-                </div>
-              </div>
-              <StatusChip status={reviewStudent.finalGradeStatus || "PROVISIONAL"} />
-            </div>
+          {(() => {
+            const recordsMap = new Map<string, number | null>();
+            reviewStudent.gradeRecords.forEach((r) => recordsMap.set(r.gradeItemId, r.score));
 
-            <div className="space-y-1">
-              <h4 className="font-semibold text-slate-900 mb-2">Itemized Assessment Scores</h4>
-              <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-56 overflow-y-auto">
-                {section.gradeItems.map((item) => {
-                  const rec = reviewStudent.gradeRecords.find((r) => r.gradeItemId === item.id);
-                  return (
-                    <div key={item.id} className="p-2.5 flex items-center justify-between">
-                      <div>
-                        <div className="font-medium text-slate-900">{item.name}</div>
-                        <div className="text-[10px] text-slate-400">Max: {item.maxScore}</div>
+            const renderScore = (item: GradeItem | null) => {
+              if (!item) return <span className="text-slate-400 font-mono">-</span>;
+              const score = recordsMap.get(item.id);
+              if (score !== undefined && score !== null) {
+                return (
+                  <span>
+                    <strong className="text-slate-900 font-mono font-bold">{score}</strong>
+                    <span className="text-slate-400 font-normal font-mono"> / {item.maxScore}</span>
+                  </span>
+                );
+              }
+              return (
+                <span>
+                  <strong className="text-slate-400 font-mono font-bold">-</strong>
+                  <span className="text-slate-400 font-normal font-mono"> / {item.maxScore}</span>
+                </span>
+              );
+            };
+
+            const midtermVal = getStudentMidtermGrade(reviewStudent);
+            const finalVal = getStudentFinalGrade(reviewStudent);
+
+            // Compute math components for formulas
+            let cpMidScoreSum = 0;
+            let cpMidHpsSum = 0;
+            categorizedItems.cpMid.forEach((it) => {
+              const sc = recordsMap.get(it.id);
+              if (sc !== undefined && sc !== null) cpMidScoreSum += sc;
+              cpMidHpsSum += it.maxScore;
+            });
+
+            let cpFinScoreSum = 0;
+            let cpFinHpsSum = 0;
+            categorizedItems.cpFin.forEach((it) => {
+              const sc = recordsMap.get(it.id);
+              if (sc !== undefined && sc !== null) cpFinScoreSum += sc;
+              cpFinHpsSum += it.maxScore;
+            });
+            const cpTotalScoreSum = cpMidScoreSum + cpFinScoreSum;
+            const cpTotalHpsSum = cpMidHpsSum + cpFinHpsSum;
+
+            let eaMidScoreSum = 0;
+            let eaMidHpsSum = 0;
+            categorizedItems.eaMid.forEach((it) => {
+              const sc = recordsMap.get(it.id);
+              if (sc !== undefined && sc !== null) eaMidScoreSum += sc;
+              eaMidHpsSum += it.maxScore;
+            });
+
+            let eaFinScoreSum = 0;
+            let eaFinHpsSum = 0;
+            categorizedItems.eaFin.forEach((it) => {
+              const sc = recordsMap.get(it.id);
+              if (sc !== undefined && sc !== null) eaFinScoreSum += sc;
+              eaFinHpsSum += it.maxScore;
+            });
+            const eaTotalScoreSum = eaMidScoreSum + eaFinScoreSum;
+            const eaTotalHpsSum = eaMidHpsSum + eaFinHpsSum;
+
+            const mptScore = categorizedItems.mpt ? recordsMap.get(categorizedItems.mpt.id) ?? null : null;
+            const mptHps = categorizedItems.mpt?.maxScore || 0;
+
+            const cptScore = categorizedItems.cpt ? recordsMap.get(categorizedItems.cpt.id) ?? null : null;
+            const cptHps = categorizedItems.cpt?.maxScore || 0;
+
+            const bonusScore = (categorizedItems.bonus ? recordsMap.get(categorizedItems.bonus.id) : null) ?? 0;
+
+            // Mathematical components using activeWeights
+            const cpMidPart = cpMidHpsSum > 0 ? (cpMidScoreSum / cpMidHpsSum) * activeWeights.midterms.cp : 0;
+            const eaMidPart = eaMidHpsSum > 0 ? (eaMidScoreSum / eaMidHpsSum) * activeWeights.midterms.ea : 0;
+            const mptMidPart = mptHps > 0 && mptScore !== null ? (mptScore / mptHps) * activeWeights.midterms.mpt : 0;
+            const computedMidPct = cpMidPart + eaMidPart + mptMidPart;
+
+            const cpFinPart = cpTotalHpsSum > 0 ? (cpTotalScoreSum / cpTotalHpsSum) * activeWeights.finals.cp : 0;
+            const eaFinPart = eaTotalHpsSum > 0 ? (eaTotalScoreSum / eaTotalHpsSum) * activeWeights.finals.ea : 0;
+            const mptFinPart = mptHps > 0 && mptScore !== null ? (mptScore / mptHps) * activeWeights.finals.mpt : 0;
+            const cptFinPart = cptHps > 0 && cptScore !== null ? (cptScore / cptHps) * activeWeights.finals.cpt : 0;
+            const computedFinPct = cpFinPart + eaFinPart + mptFinPart + cptFinPart + bonusScore;
+
+            // Evaluation Completion Analytics
+            const totalAssessments =
+              categorizedItems.cpMid.length +
+              categorizedItems.cpFin.length +
+              categorizedItems.eaMid.length +
+              categorizedItems.eaFin.length +
+              (categorizedItems.mpt ? 1 : 0) +
+              (categorizedItems.cpt ? 1 : 0);
+
+            let recordedCount = 0;
+            categorizedItems.cpMid.forEach((it) => { if (recordsMap.get(it.id) != null) recordedCount++; });
+            categorizedItems.cpFin.forEach((it) => { if (recordsMap.get(it.id) != null) recordedCount++; });
+            categorizedItems.eaMid.forEach((it) => { if (recordsMap.get(it.id) != null) recordedCount++; });
+            categorizedItems.eaFin.forEach((it) => { if (recordsMap.get(it.id) != null) recordedCount++; });
+            if (mptScore !== null) recordedCount++;
+            if (cptScore !== null) recordedCount++;
+
+            const completionPct = totalAssessments > 0 ? Math.round((recordedCount / totalAssessments) * 100) : 0;
+            const cpMasteryPct = cpTotalHpsSum > 0 ? Math.round((cpTotalScoreSum / cpTotalHpsSum) * 100) : 0;
+            const eaMasteryPct = eaTotalHpsSum > 0 ? Math.round((eaTotalScoreSum / eaTotalHpsSum) * 100) : 0;
+            const mptPct = mptHps > 0 && mptScore !== null ? Math.round((mptScore / mptHps) * 100) : 0;
+            const cptPct = cptHps > 0 && cptScore !== null ? Math.round((cptScore / cptHps) * 100) : 0;
+
+            // Academic Standing Indicator Factor (reactively calculated using activeWeights)
+            let effectivePct = computedFinPct > 0 ? computedFinPct : (computedMidPct > 0 ? computedMidPct : 0);
+            if (effectivePct === 0 && finalVal && finalVal !== "-") {
+              const num = parseFloat(finalVal.replace("%", "").trim());
+              if (!isNaN(num)) {
+                if (num <= 5.0 && num >= 1.0) {
+                  effectivePct = Math.max(0, Math.min(100, 100 - (num - 1.0) * 12.5));
+                } else {
+                  effectivePct = num;
+                }
+              }
+            }
+
+            const getStandingFactor = () => {
+              if (recordedCount === 0 && effectivePct === 0) {
+                return {
+                  status: "Pending Evaluation",
+                  label: "Awaiting Assessment Submissions",
+                  badge: "bg-slate-100 text-slate-700 border-slate-200",
+                  dot: "bg-slate-400",
+                  summary: "No assessment scores have been recorded yet. Import or enter scores to generate standing analytics.",
+                  icon: Clock,
+                  cardBg: "bg-slate-50 border-slate-200",
+                };
+              }
+              if (effectivePct >= 90) {
+                return {
+                  status: "Dean's List Standing",
+                  label: "High Academic Honors (Grade 3.5 - 4.0)",
+                  badge: "bg-emerald-50 text-emerald-800 border-emerald-300",
+                  dot: "bg-emerald-500",
+                  summary: "Exceptional mastery observed across Class Participation, Enabling Activities, and Performance Milestones.",
+                  icon: Award,
+                  cardBg: "bg-emerald-50/50 border-emerald-200",
+                };
+              }
+              if (effectivePct >= 80) {
+                return {
+                  status: "Strong Academic Standing",
+                  label: "Very Good Standing (Grade 2.5 - 3.0)",
+                  badge: "bg-blue-50 text-blue-800 border-blue-300",
+                  dot: "bg-blue-500",
+                  summary: "Consistent above-average performance; comfortably meeting all course competencies.",
+                  icon: TrendingUp,
+                  cardBg: "bg-blue-50/50 border-blue-200",
+                };
+              }
+              if (effectivePct >= 75) {
+                return {
+                  status: "Good Academic Standing",
+                  label: "Satisfactory Standing (Grade 2.0)",
+                  badge: "bg-sky-50 text-sky-800 border-sky-300",
+                  dot: "bg-sky-500",
+                  summary: "Satisfactory coursework performance meeting institutional benchmark standards.",
+                  icon: CheckCircle2,
+                  cardBg: "bg-sky-50/40 border-sky-200",
+                };
+              }
+              if (effectivePct >= 60) {
+                return {
+                  status: "Passing Standing",
+                  label: "Passing Standing (Grade 1.0 - 1.5)",
+                  badge: "bg-amber-50 text-amber-800 border-amber-300",
+                  dot: "bg-amber-500",
+                  summary: "Student is currently near the passing line. Consider academic consultation prior to final tasks.",
+                  icon: AlertTriangle,
+                  cardBg: "bg-amber-50/50 border-amber-200",
+                };
+              }
+              return {
+                status: "Consultation Advised",
+                label: "Academic Intervention Recommended",
+                badge: "bg-rose-50 text-rose-800 border-rose-300",
+                dot: "bg-rose-500",
+                summary: "Cumulative score falls below passing criteria. Targeted follow-up and remedial guidance advised.",
+                icon: AlertTriangle,
+                cardBg: "bg-rose-50/60 border-rose-200",
+              };
+            };
+
+            const standing = getStandingFactor();
+            const StandingIcon = standing.icon;
+
+            // Render Item Row (clean title + score fraction, no graph as requested)
+            const renderItemRow = (item: GradeItem) => {
+              const score = recordsMap.get(item.id);
+              const isRecorded = score !== undefined && score !== null;
+
+              return (
+                <div
+                  key={item.id}
+                  className="py-2 px-3 rounded-lg hover:bg-slate-50/90 transition-colors border border-slate-100 flex items-center justify-between gap-3 text-xs"
+                >
+                  <span className="text-slate-800 font-medium truncate" title={item.name}>
+                    {item.name}
+                  </span>
+                  <div className="font-mono text-xs shrink-0 text-right">
+                    {isRecorded ? (
+                      <span>
+                        <strong className="text-slate-900 font-bold">{score}</strong>
+                        <span className="text-slate-400 font-normal"> / {item.maxScore}</span>
+                      </span>
+                    ) : (
+                      <span>
+                        <strong className="text-slate-400 font-bold">-</strong>
+                        <span className="text-slate-400 font-normal"> / {item.maxScore}</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            };
+
+            return (
+              <div className="space-y-4 text-xs max-h-[78vh] overflow-y-auto pr-1.5">
+                {/* 1. Student Identity & Academic Standing Factor Indicator */}
+                <div className={`p-4 rounded-xl border ${standing.cardBg} transition-all`}>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">
+                          Student Profile
+                        </span>
+                        <span className="text-slate-300">•</span>
+                        <span className="font-mono font-medium text-slate-700 text-xs">
+                          ID: {reviewStudent.student.studentNumber}
+                        </span>
+                        <span className="text-slate-300">•</span>
+                        <span className="text-xs text-slate-600">
+                          {section.subjectName} &bull; Section {section.sectionName} &bull; {section.sectionCode}
+                        </span>
                       </div>
-                      <div className="text-right">
-                        <div className="font-mono font-semibold text-slate-900">
-                          {rec?.score !== null && rec?.score !== undefined ? rec.score : "—"}
-                        </div>
-                        <span className="text-[10px] text-slate-500">{rec?.status || "NOT_RECORDED"}</span>
+                      <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
+                        {reviewStudent.student.displayName}
+                      </h3>
+                    </div>
+
+                    {/* Standing Pill Factor */}
+                    <div className="flex sm:flex-col sm:items-end gap-2 shrink-0">
+                      <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border shadow-2xs ${standing.badge}`}>
+                        <StandingIcon className="w-3.5 h-3.5 shrink-0" />
+                        <span>{standing.status}: {standing.label}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                        <StatusChip status={reviewStudent.finalGradeStatus || "PROVISIONAL"} />
+                        <span className="font-mono text-slate-600 font-medium">
+                          {section.term} {section.academicYear}
+                        </span>
                       </div>
                     </div>
+                  </div>
+
+                  <div className="mt-3 pt-2.5 border-t border-slate-200/80 flex items-center gap-2 text-xs text-slate-600">
+                    <Activity className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span className="leading-snug">{standing.summary}</span>
+                  </div>
+                </div>
+
+                {/* 2. Analytics KPI Strip (4 Cards) */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  {/* Card 1: Evaluation Progress */}
+                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white shadow-2xs space-y-1.5">
+                    <div className="flex items-center justify-between text-slate-500">
+                      <span className="text-[10px] font-bold uppercase tracking-wider">Recorded Work</span>
+                      <BarChart3 className="w-3.5 h-3.5 text-slate-400" />
+                    </div>
+                    <div className="text-base sm:text-lg font-black font-mono text-slate-900">
+                      {recordedCount} / {totalAssessments}
+                    </div>
+                    <div className="space-y-1">
+                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className="bg-slate-800 h-full rounded-full transition-all duration-300"
+                          style={{ width: `${completionPct}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] text-slate-500 font-medium">
+                        {completionPct}% Assessments Tracked
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Card 2: Class Participation (CP) Mastery */}
+                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white shadow-2xs space-y-1.5">
+                    <div className="flex items-center justify-between text-teal-700">
+                      <span className="text-[10px] font-bold uppercase tracking-wider">CP Mastery</span>
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-teal-50 border border-teal-200">
+                        {activeWeights.finals.cp}% Wt
+                      </span>
+                    </div>
+                    <div className="text-base sm:text-lg font-black font-mono text-teal-900">
+                      {cpMasteryPct}%
+                    </div>
+                    <div className="space-y-1">
+                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className="bg-teal-500 h-full rounded-full transition-all duration-300"
+                          style={{ width: `${cpMasteryPct}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] text-slate-500 font-mono font-medium">
+                        {cpTotalScoreSum} / {cpTotalHpsSum} HPS
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Card 3: Enabling Activities (EA) Mastery */}
+                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white shadow-2xs space-y-1.5">
+                    <div className="flex items-center justify-between text-indigo-700">
+                      <span className="text-[10px] font-bold uppercase tracking-wider">EA Mastery</span>
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-indigo-50 border border-indigo-200">
+                        {activeWeights.finals.ea}% Wt
+                      </span>
+                    </div>
+                    <div className="text-base sm:text-lg font-black font-mono text-indigo-900">
+                      {eaMasteryPct}%
+                    </div>
+                    <div className="space-y-1">
+                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className="bg-indigo-500 h-full rounded-full transition-all duration-300"
+                          style={{ width: `${eaMasteryPct}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] text-slate-500 font-mono font-medium">
+                        {eaTotalScoreSum} / {eaTotalHpsSum} HPS
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Card 4: Major Performance Tasks with Visual Graphs for MPT & CPT */}
+                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white shadow-2xs space-y-2">
+                    <div className="flex items-center justify-between text-blue-700">
+                      <span className="text-[10px] font-bold uppercase tracking-wider">Performance Tasks</span>
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-blue-50 border border-blue-200 text-blue-900">
+                        {activeWeights.finals.mpt + activeWeights.finals.cpt}% Wt
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5 pt-0.5">
+                      {/* MPT Mini Graph */}
+                      <div className="space-y-0.5">
+                        <div className="flex items-center justify-between text-[11px] font-mono">
+                          <span className="text-slate-600 font-semibold">MPT:</span>
+                          <span className="text-slate-900 font-bold">
+                            {mptScore !== null ? mptScore : "-"}/{mptHps || 50}
+                            <span className="text-slate-400 font-normal ml-1">({mptPct}%)</span>
+                          </span>
+                        </div>
+                        <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                          <div
+                            className="bg-blue-600 h-full rounded-full transition-all duration-300"
+                            style={{ width: `${mptScore !== null ? Math.min(100, Math.max(4, mptPct)) : 0}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* CPT Mini Graph */}
+                      <div className="space-y-0.5">
+                        <div className="flex items-center justify-between text-[11px] font-mono">
+                          <span className="text-slate-600 font-semibold">CPT:</span>
+                          <span className="text-slate-900 font-bold">
+                            {cptScore !== null ? cptScore : "-"}/{cptHps || 50}
+                            <span className="text-slate-400 font-normal ml-1">({cptPct}%)</span>
+                          </span>
+                        </div>
+                        <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                          <div
+                            className="bg-purple-600 h-full rounded-full transition-all duration-300"
+                            style={{ width: `${cptScore !== null ? Math.min(100, Math.max(4, cptPct)) : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <span className="text-[10px] text-slate-400 block truncate font-medium">
+                      Midterm &amp; Final Projects
+                    </span>
+                  </div>
+                </div>
+
+                {/* 3. Executive Grade Visualizer with Multi-Segment Progress Bars */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {/* Midterm Grade Card */}
+                  <div className="rounded-xl border border-slate-200/90 bg-slate-50/70 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                          Midterm Benchmark
+                        </span>
+                        <div className="text-2xl font-black font-mono text-slate-900">
+                          {midtermVal}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[10px] font-semibold text-slate-400 block uppercase">
+                          Computed Factor
+                        </span>
+                        <span className="text-sm font-black font-mono text-slate-800">
+                          {computedMidPct.toFixed(2)}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Multi-Segment Contribution Bar */}
+                    <div className="space-y-1.5">
+                      <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden flex shadow-inner">
+                        <div
+                          className="bg-teal-500 h-full transition-all duration-500"
+                          style={{ width: `${Math.min(activeWeights.midterms.cp, cpMidPart)}%` }}
+                          title={`CP: ${cpMidPart.toFixed(1)}%`}
+                        />
+                        <div
+                          className="bg-indigo-500 h-full transition-all duration-500"
+                          style={{ width: `${Math.min(activeWeights.midterms.ea, eaMidPart)}%` }}
+                          title={`EA: ${eaMidPart.toFixed(1)}%`}
+                        />
+                        <div
+                          className="bg-blue-600 h-full transition-all duration-500"
+                          style={{ width: `${Math.min(activeWeights.midterms.mpt, mptMidPart)}%` }}
+                          title={`MPT: ${mptMidPart.toFixed(1)}%`}
+                        />
+                      </div>
+
+                      {/* Legend Chips */}
+                      <div className="flex items-center justify-between text-[10px] text-slate-600 pt-0.5 flex-wrap gap-1">
+                        <span className="flex items-center gap-1 font-mono">
+                          <span className="w-2 h-2 rounded-full bg-teal-500"></span>
+                          CP: <strong>+{cpMidPart.toFixed(1)}%</strong> ({activeWeights.midterms.cp}%)
+                        </span>
+                        <span className="flex items-center gap-1 font-mono">
+                          <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                          EA: <strong>+{eaMidPart.toFixed(1)}%</strong> ({activeWeights.midterms.ea}%)
+                        </span>
+                        <span className="flex items-center gap-1 font-mono">
+                          <span className="w-2 h-2 rounded-full bg-blue-600"></span>
+                          MPT: <strong>+{mptMidPart.toFixed(1)}%</strong> ({activeWeights.midterms.mpt}%)
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Final Grade Card */}
+                  <div className="rounded-xl border border-blue-200 bg-blue-50/40 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-900 block">
+                          Overall Course Mark
+                        </span>
+                        <div className="text-2xl font-black font-mono text-blue-950">
+                          {finalVal}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[10px] font-semibold text-blue-800/70 block uppercase">
+                          Computed Factor
+                        </span>
+                        <span className="text-sm font-black font-mono text-blue-950">
+                          {computedFinPct.toFixed(2)}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Multi-Segment Contribution Bar */}
+                    <div className="space-y-1.5">
+                      <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden flex shadow-inner">
+                        <div
+                          className="bg-teal-500 h-full transition-all duration-500"
+                          style={{ width: `${Math.min(activeWeights.finals.cp, cpFinPart)}%` }}
+                          title={`CP: ${cpFinPart.toFixed(1)}%`}
+                        />
+                        <div
+                          className="bg-indigo-500 h-full transition-all duration-500"
+                          style={{ width: `${Math.min(activeWeights.finals.ea, eaFinPart)}%` }}
+                          title={`EA: ${eaFinPart.toFixed(1)}%`}
+                        />
+                        <div
+                          className="bg-blue-600 h-full transition-all duration-500"
+                          style={{ width: `${Math.min(activeWeights.finals.mpt, mptFinPart)}%` }}
+                          title={`MPT: ${mptFinPart.toFixed(1)}%`}
+                        />
+                        <div
+                          className="bg-purple-600 h-full transition-all duration-500"
+                          style={{ width: `${Math.min(activeWeights.finals.cpt, cptFinPart)}%` }}
+                          title={`CPT: ${cptFinPart.toFixed(1)}%`}
+                        />
+                        {bonusScore > 0 && (
+                          <div
+                            className="bg-emerald-500 h-full transition-all duration-500"
+                            style={{ width: `${Math.min(10, bonusScore)}%` }}
+                            title={`Bonus: +${bonusScore} pts`}
+                          />
+                        )}
+                      </div>
+
+                      {/* Legend Chips */}
+                      <div className="flex items-center justify-between text-[10px] text-slate-600 pt-0.5 flex-wrap gap-1">
+                        <span className="flex items-center gap-1 font-mono">
+                          <span className="w-2 h-2 rounded-full bg-teal-500"></span>
+                          CP: <strong>+{cpFinPart.toFixed(1)}%</strong>
+                        </span>
+                        <span className="flex items-center gap-1 font-mono">
+                          <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                          EA: <strong>+{eaFinPart.toFixed(1)}%</strong>
+                        </span>
+                        <span className="flex items-center gap-1 font-mono">
+                          <span className="w-2 h-2 rounded-full bg-blue-600"></span>
+                          MPT: <strong>+{mptFinPart.toFixed(1)}%</strong>
+                        </span>
+                        <span className="flex items-center gap-1 font-mono">
+                          <span className="w-2 h-2 rounded-full bg-purple-600"></span>
+                          CPT: <strong>+{cptFinPart.toFixed(1)}%</strong>
+                        </span>
+                        {bonusScore > 0 && (
+                          <span className="flex items-center gap-1 font-mono text-emerald-700 font-bold">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            +{bonusScore} Bonus
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4. Detailed Assessment Breakdown Grids */}
+                {/* 4A. Class Participation (CP) Grid */}
+                <div className="rounded-xl border border-slate-200/90 overflow-hidden bg-white shadow-2xs">
+                  <div className="bg-slate-100/80 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
+                    <span className="font-bold text-slate-900 text-xs tracking-wide uppercase">
+                      Class Participation (CP)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 font-bold border border-teal-200">
+                        Finals Wt: {activeWeights.finals.cp}%
+                      </span>
+                      <span className="text-[11px] font-mono font-bold text-slate-700">
+                        Total: {cpTotalScoreSum} / {cpTotalHpsSum} HPS
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-200">
+                    {/* Midterms (Week 1 to Week 7) */}
+                    <div className="p-3.5 space-y-2">
+                      <div className="text-[11px] font-bold text-teal-900 pb-1.5 border-b border-slate-100 uppercase tracking-wider flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span>Midterms (Week 1 to Week 7)</span>
+                          <span className="font-mono text-[9px] px-1.5 py-0.2 rounded bg-teal-100/80 text-teal-900 font-bold">
+                            {activeWeights.midterms.cp}% Midterm Wt
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-600 font-mono font-semibold">
+                          Subtotal: {cpMidScoreSum}/{cpMidHpsSum}
+                        </span>
+                      </div>
+
+                      {categorizedItems.cpMid.length === 0 ? (
+                        <div className="py-6 text-center text-slate-400 font-mono text-xs">-</div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {categorizedItems.cpMid.map((item) => renderItemRow(item))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Post Midterms (Week 8 to Week 13) */}
+                    <div className="p-3.5 space-y-2">
+                      <div className="text-[11px] font-bold text-teal-900 pb-1.5 border-b border-slate-100 uppercase tracking-wider flex items-center justify-between">
+                        <span>Post Midterms (Week 8 to Week 13)</span>
+                        <span className="text-[10px] text-slate-600 font-mono font-semibold">
+                          Subtotal: {cpFinScoreSum}/{cpFinHpsSum}
+                        </span>
+                      </div>
+
+                      {categorizedItems.cpFin.length === 0 ? (
+                        <div className="py-6 text-center text-slate-400 font-mono text-xs">-</div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {categorizedItems.cpFin.map((item) => renderItemRow(item))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4B. Enabling Activities (EA) Grid */}
+                <div className="rounded-xl border border-slate-200/90 overflow-hidden bg-white shadow-2xs">
+                  <div className="bg-slate-100/80 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
+                    <span className="font-bold text-slate-900 text-xs tracking-wide uppercase">
+                      Enabling Activities (EA)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 font-bold border border-indigo-200">
+                        Finals Wt: {activeWeights.finals.ea}%
+                      </span>
+                      <span className="text-[11px] font-mono font-bold text-slate-700">
+                        Total: {eaTotalScoreSum} / {eaTotalHpsSum} HPS
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-200">
+                    {/* Midterms (Week 1 to Week 7) */}
+                    <div className="p-3.5 space-y-2">
+                      <div className="text-[11px] font-bold text-indigo-900 pb-1.5 border-b border-slate-100 uppercase tracking-wider flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span>Midterms (Week 1 to Week 7)</span>
+                          <span className="font-mono text-[9px] px-1.5 py-0.2 rounded bg-indigo-100/80 text-indigo-900 font-bold">
+                            {activeWeights.midterms.ea}% Midterm Wt
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-600 font-mono font-semibold">
+                          Subtotal: {eaMidScoreSum}/{eaMidHpsSum}
+                        </span>
+                      </div>
+
+                      {categorizedItems.eaMid.length === 0 ? (
+                        <div className="py-6 text-center text-slate-400 font-mono text-xs">-</div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {categorizedItems.eaMid.map((item) => renderItemRow(item))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Post Midterms (Week 8 to Week 13) */}
+                    <div className="p-3.5 space-y-2">
+                      <div className="text-[11px] font-bold text-indigo-900 pb-1.5 border-b border-slate-100 uppercase tracking-wider flex items-center justify-between">
+                        <span>Post Midterms (Week 8 to Week 13)</span>
+                        <span className="text-[10px] text-slate-600 font-mono font-semibold">
+                          Subtotal: {eaFinScoreSum}/{eaFinHpsSum}
+                        </span>
+                      </div>
+
+                      {categorizedItems.eaFin.length === 0 ? (
+                        <div className="py-6 text-center text-slate-400 font-mono text-xs">-</div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {categorizedItems.eaFin.map((item) => renderItemRow(item))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4C. Performance Tasks & Bonus Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* MPT */}
+                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white space-y-2 shadow-2xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Major PT (MPT)
+                      </span>
+                      <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-blue-50 text-blue-800 font-bold border border-blue-200">
+                        Midterm Exam
+                      </span>
+                    </div>
+                    <div className="text-xs font-semibold text-slate-900 truncate" title={categorizedItems.mpt?.name || "MPT"}>
+                      {categorizedItems.mpt?.name || "Major Performance Task"}
+                    </div>
+                    <div className="flex items-baseline justify-between pt-0.5">
+                      <div className="text-sm font-bold font-mono text-slate-900">
+                        {renderScore(categorizedItems.mpt)}
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-500 font-bold">
+                        {mptPct}%
+                      </span>
+                    </div>
+                    {/* Visual Progress Bar for MPT */}
+                    <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className="bg-blue-600 h-full rounded-full transition-all duration-300"
+                        style={{ width: `${mptScore !== null ? Math.min(100, Math.max(4, mptPct)) : 0}%` }}
+                      />
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400">
+                      Mid: {activeWeights.midterms.mpt}% | Fin: {activeWeights.finals.mpt}% Wt
+                    </div>
+                  </div>
+
+                  {/* CPT */}
+                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white space-y-2 shadow-2xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Culminating PT (CPT)
+                      </span>
+                      <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-purple-50 text-purple-800 font-bold border border-purple-200">
+                        Final Project
+                      </span>
+                    </div>
+                    <div className="text-xs font-semibold text-slate-900 truncate" title={categorizedItems.cpt?.name || "CPT"}>
+                      {categorizedItems.cpt?.name || "Culminating Performance Task"}
+                    </div>
+                    <div className="flex items-baseline justify-between pt-0.5">
+                      <div className="text-sm font-bold font-mono text-slate-900">
+                        {renderScore(categorizedItems.cpt)}
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-500 font-bold">
+                        {cptPct}%
+                      </span>
+                    </div>
+                    {/* Visual Progress Bar for CPT */}
+                    <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className="bg-purple-600 h-full rounded-full transition-all duration-300"
+                        style={{ width: `${cptScore !== null ? Math.min(100, Math.max(4, cptPct)) : 0}%` }}
+                      />
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400">
+                      Fin: {activeWeights.finals.cpt}% Wt
+                    </div>
+                  </div>
+
+                  {/* BONUS */}
+                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white space-y-2 shadow-2xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Bonus Points
+                      </span>
+                      <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 font-bold border border-emerald-200">
+                        Direct Add
+                      </span>
+                    </div>
+                    <div className="text-xs font-semibold text-slate-900 truncate" title={categorizedItems.bonus?.name || "BONUS"}>
+                      {categorizedItems.bonus?.name || "Bonus Points"}
+                    </div>
+                    <div className="flex items-baseline justify-between pt-1">
+                      <div className="text-sm font-bold font-mono text-slate-900">
+                        {(() => {
+                          if (!categorizedItems.bonus) return <span className="text-slate-400 font-mono">-</span>;
+                          const sc = recordsMap.get(categorizedItems.bonus.id);
+                          if (sc !== undefined && sc !== null && sc > 0) {
+                            return <span className="text-emerald-700 font-bold">+{sc} pts</span>;
+                          }
+                          return <span className="text-slate-400 font-mono">-</span>;
+                        })()}
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-500">
+                        Cumulative
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 5. Configured Weight Matrix & Math Breakdown (Formula Transparency) */}
+                <div className="space-y-2.5 pt-1">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Configured Percentage Arithmetic Breakdown</span>
+                    </div>
+                    <span className="text-[10px] font-normal text-slate-500">
+                      Based on Section Percentage Allocation Settings
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {/* Midterms Computation Card */}
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5 space-y-2.5">
+                      <div className="flex items-center justify-between pb-1 border-b border-slate-200/70">
+                        <span className="font-bold text-slate-900 text-xs">Midterm Grade Math</span>
+                        <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-slate-200/80 font-bold text-slate-700">
+                          {activeWeights.midterms.cp}% + {activeWeights.midterms.ea}% + {activeWeights.midterms.mpt}%
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5 text-[11px]">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">Class Participation ({activeWeights.midterms.cp}%):</span>
+                          <span className="font-mono text-slate-800">
+                            {cpMidHpsSum > 0 ? (
+                              <span>
+                                ({cpMidScoreSum}/{cpMidHpsSum}) &times; {activeWeights.midterms.cp}% = <strong className="text-slate-900">{cpMidPart.toFixed(2)}%</strong>
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">-</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">Enabling Activities ({activeWeights.midterms.ea}%):</span>
+                          <span className="font-mono text-slate-800">
+                            {eaMidHpsSum > 0 ? (
+                              <span>
+                                ({eaMidScoreSum}/{eaMidHpsSum}) &times; {activeWeights.midterms.ea}% = <strong className="text-slate-900">{eaMidPart.toFixed(2)}%</strong>
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">-</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">Major Performance Task ({activeWeights.midterms.mpt}%):</span>
+                          <span className="font-mono text-slate-800">
+                            {mptHps > 0 && mptScore !== null ? (
+                              <span>
+                                ({mptScore}/{mptHps}) &times; {activeWeights.midterms.mpt}% = <strong className="text-slate-900">{mptMidPart.toFixed(2)}%</strong>
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">(- / {mptHps || 50}) &times; {activeWeights.midterms.mpt}% = 0.00%</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
+                          <span className="text-slate-900 font-bold text-xs">Total Midterm Sum:</span>
+                          <span className="font-mono text-blue-900 font-black text-sm">
+                            {cpMidHpsSum > 0 || eaMidHpsSum > 0 ? `${computedMidPct.toFixed(2)}%` : "-"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Finals Computation Card */}
+                    <div className="rounded-xl border border-blue-200 bg-blue-50/30 p-3.5 space-y-2.5">
+                      <div className="flex items-center justify-between pb-1 border-b border-blue-200/70">
+                        <span className="font-bold text-blue-950 text-xs">Final Grade Math</span>
+                        <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-blue-100 font-bold text-blue-900">
+                          {activeWeights.finals.cp}% + {activeWeights.finals.ea}% + {activeWeights.finals.mpt}% + {activeWeights.finals.cpt}% + Bonus
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5 text-[11px]">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">Class Participation Total ({activeWeights.finals.cp}%):</span>
+                          <span className="font-mono text-slate-800">
+                            {cpTotalHpsSum > 0 ? (
+                              <span>
+                                ({cpTotalScoreSum}/{cpTotalHpsSum}) &times; {activeWeights.finals.cp}% = <strong className="text-slate-900">{cpFinPart.toFixed(2)}%</strong>
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">-</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">Enabling Activities Total ({activeWeights.finals.ea}%):</span>
+                          <span className="font-mono text-slate-800">
+                            {eaTotalHpsSum > 0 ? (
+                              <span>
+                                ({eaTotalScoreSum}/{eaTotalHpsSum}) &times; {activeWeights.finals.ea}% = <strong className="text-slate-900">{eaFinPart.toFixed(2)}%</strong>
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">-</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">Major PT - Midterm Exam ({activeWeights.finals.mpt}%):</span>
+                          <span className="font-mono text-slate-800">
+                            {mptHps > 0 && mptScore !== null ? (
+                              <span>
+                                ({mptScore}/{mptHps}) &times; {activeWeights.finals.mpt}% = <strong className="text-slate-900">{mptFinPart.toFixed(2)}%</strong>
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">(- / {mptHps || 50}) &times; {activeWeights.finals.mpt}% = 0.00%</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">Culminating PT - Final Project ({activeWeights.finals.cpt}%):</span>
+                          <span className="font-mono text-slate-800">
+                            {cptHps > 0 && cptScore !== null ? (
+                              <span>
+                                ({cptScore}/{cptHps}) &times; {activeWeights.finals.cpt}% = <strong className="text-slate-900">{cptFinPart.toFixed(2)}%</strong>
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">(- / {cptHps || 50}) &times; {activeWeights.finals.cpt}% = 0.00%</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">Bonus Points:</span>
+                          <span className="font-mono text-slate-800">
+                            {bonusScore > 0 ? (
+                              <strong className="text-emerald-700">+{bonusScore.toFixed(2)} pts</strong>
+                            ) : (
+                              <span className="text-slate-400">+0.00 pts</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div className="pt-2 border-t border-blue-200 flex items-center justify-between">
+                          <span className="text-blue-950 font-bold text-xs">Total Final Cumulative:</span>
+                          <span className="font-mono text-blue-950 font-black text-sm">
+                            {cpTotalHpsSum > 0 || eaTotalHpsSum > 0 ? `${computedFinPct.toFixed(2)}%` : "-"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Remarks if present and genuine (suppress student consultation advisory notice on professor side) */}
+                {(() => {
+                  if (!reviewStudent.remarks) return null;
+                  const filteredRemarks = reviewStudent.remarks
+                    .split("|")
+                    .map((part) => part.trim())
+                    .filter((part) => {
+                      const u = part.toUpperCase();
+                      return (
+                        !u.includes("KINDLY CONTACT") &&
+                        !u.includes("UNAVAILABLE") &&
+                        !u.includes("UNAVAIBLE") &&
+                        !u.includes("GRADE IS") &&
+                        !u.includes("GRADES IS") &&
+                        !u.startsWith("MIDTERM:")
+                      );
+                    })
+                    .join(" | ");
+
+                  if (!filteredRemarks) return null;
+
+                  return (
+                    <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200/80 text-amber-950 text-xs leading-relaxed">
+                      <strong className="font-semibold">Professor Remarks: </strong>
+                      <span>{filteredRemarks}</span>
+                    </div>
                   );
-                })}
-              </div>
-            </div>
+                })()}
 
-            {reviewStudent.remarks && (
-              <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900">
-                <strong>Instructor Remarks: </strong> {reviewStudent.remarks}
+                <div className="pt-2 flex justify-end">
+                  <Button size="sm" onClick={() => setReviewStudent(null)}>
+                    Close Breakdown
+                  </Button>
+                </div>
               </div>
-            )}
-
-            <div className="pt-3 flex justify-end">
-              <Button size="sm" onClick={() => setReviewStudent(null)}>
-                Close
-              </Button>
-            </div>
-          </div>
+            );
+          })()}
         </Modal>
       )}
     </div>

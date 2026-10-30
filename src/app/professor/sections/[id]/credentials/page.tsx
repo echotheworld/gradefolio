@@ -42,6 +42,7 @@ export default function StudentCredentialsPage() {
 
   const [students, setStudents] = useState<StudentCredentialItem[]>([]);
   const [sectionCode, setSectionCode] = useState("");
+  const [sectionName, setSectionName] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
 
@@ -66,7 +67,7 @@ export default function StudentCredentialsPage() {
       const res = await fetch(`/api/professor/sections/${sectionId}/credentials`);
       if (!res.ok) {
         if (res.status === 401) {
-          router.push("/auth/login");
+          router.push("/");
           return;
         }
         throw new Error("Failed to load credentials");
@@ -74,6 +75,7 @@ export default function StudentCredentialsPage() {
       const data = await res.json();
       setStudents(data.students || []);
       setSectionCode(data.sectionCode || "");
+      setSectionName(data.sectionName || "");
       setIsLoading(false);
     } catch {
       toast({ type: "error", title: "Error", message: "Failed to load credentials." });
@@ -210,7 +212,7 @@ export default function StudentCredentialsPage() {
             Student Credential Manager
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Section: <strong className="font-mono text-slate-900">{sectionCode}</strong> &bull; Total Students:{" "}
+            Section: <strong className="text-slate-900 font-semibold">{sectionName || sectionCode}</strong> &bull; Total Students:{" "}
             <strong>{students.length}</strong>
           </p>
         </div>
@@ -259,11 +261,27 @@ export default function StudentCredentialsPage() {
             </thead>
             <tbody className="divide-y divide-slate-100 bg-white">
               {isLoading ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center text-slate-400">
-                    Loading student credentials...
-                  </td>
-                </tr>
+                <>
+                  {[1, 2, 3, 4, 5].map((i) => (
+                    <tr key={i} className="animate-pulse">
+                      <td className="px-6 py-4">
+                        <div className="w-24 h-4 bg-slate-200 rounded" />
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="w-40 h-4 bg-slate-200 rounded" />
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="w-20 h-5 bg-slate-200 rounded-full" />
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="w-28 h-4 bg-slate-100 rounded" />
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="w-24 h-7 bg-slate-200 rounded-lg ml-auto" />
+                      </td>
+                    </tr>
+                  ))}
+                </>
               ) : students.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-6 py-12 text-center text-slate-400">
