@@ -1148,11 +1148,6 @@ export default function SectionDetailsPage() {
                       </td>
                       <td className="px-5 py-3.5 font-semibold text-slate-900 truncate max-w-[220px]">
                         {ss.student.displayName}
-                        {(ss.student.course || ss.student.email) && (
-                          <span className="block text-[10px] font-normal text-slate-400 truncate">
-                            {[ss.student.course, ss.student.strand, ss.student.email].filter(Boolean).join(" • ")}
-                          </span>
-                        )}
                       </td>
                       <td className="px-5 py-3.5 font-mono font-medium text-slate-700">
                         {midtermGrade !== "-" ? (
@@ -1893,8 +1888,7 @@ export default function SectionDetailsPage() {
         <Modal
           isOpen={true}
           onClose={() => setReviewStudent(null)}
-          title="Student Grade Breakdown & Performance Analytics"
-          description={`${reviewStudent.student.displayName} • ${reviewStudent.student.studentNumber} • Section ${section.sectionName} • ${section.sectionCode}`}
+          title="Grade Breakdown"
           maxWidth="5xl"
         >
           {(() => {
@@ -2122,19 +2116,9 @@ export default function SectionDetailsPage() {
                 <div className={`p-4 rounded-xl border ${standing.cardBg} transition-all`}>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">
-                          Student Profile
-                        </span>
-                        <span className="text-slate-300">•</span>
-                        <span className="font-mono font-medium text-slate-700 text-xs">
-                          ID: {reviewStudent.student.studentNumber}
-                        </span>
-                        <span className="text-slate-300">•</span>
-                        <span className="text-xs text-slate-600">
-                          {section.subjectName} &bull; Section {section.sectionName} &bull; {section.sectionCode}
-                        </span>
-                      </div>
+                      <span className="font-mono font-medium text-slate-600 text-xs block">
+                        {reviewStudent.student.studentNumber}
+                      </span>
                       <h3 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
                         {reviewStudent.student.displayName}
                       </h3>
@@ -2144,142 +2128,19 @@ export default function SectionDetailsPage() {
                     <div className="flex sm:flex-col sm:items-end gap-2 shrink-0">
                       <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border shadow-2xs ${standing.badge}`}>
                         <StandingIcon className="w-3.5 h-3.5 shrink-0" />
-                        <span>{standing.status}: {standing.label}</span>
+                        <span>{standing.status}</span>
                       </div>
-                      <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
-                        <StatusChip status={reviewStudent.finalGradeStatus || "PROVISIONAL"} />
-                        <span className="font-mono text-slate-600 font-medium">
-                          {section.term} {section.academicYear}
-                        </span>
-                      </div>
+                      <StatusChip status={reviewStudent.finalGradeStatus || "PROVISIONAL"} />
                     </div>
                   </div>
 
                   <div className="mt-3 pt-2.5 border-t border-slate-200/80 flex items-center gap-2 text-xs text-slate-600">
                     <Activity className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                    <span className="leading-snug">{standing.summary}</span>
-                  </div>
-                </div>
-
-                {/* 2. Analytics KPI Strip (4 Cards) */}
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                  {/* Card 1: Evaluation Progress */}
-                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white shadow-2xs space-y-1.5">
-                    <div className="flex items-center justify-between text-slate-500">
-                      <span className="text-[10px] font-bold uppercase tracking-wider">Recorded Work</span>
-                      <BarChart3 className="w-3.5 h-3.5 text-slate-400" />
-                    </div>
-                    <div className="text-base sm:text-lg font-black font-mono text-slate-900">
-                      {recordedCount} / {totalAssessments}
-                    </div>
-                    <div className="space-y-1">
-                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div
-                          className="bg-slate-800 h-full rounded-full transition-all duration-300"
-                          style={{ width: `${completionPct}%` }}
-                        />
-                      </div>
-                      <span className="text-[10px] text-slate-500 font-medium">
-                        {completionPct}% Assessments Tracked
+                    <span className="leading-snug">
+                      {standing.summary}{" "}
+                      <span className="font-mono font-semibold text-slate-700">
+                        ({recordedCount}/{totalAssessments} assessments recorded)
                       </span>
-                    </div>
-                  </div>
-
-                  {/* Card 2: Class Participation (CP) Mastery */}
-                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white shadow-2xs space-y-1.5">
-                    <div className="flex items-center justify-between text-teal-700">
-                      <span className="text-[10px] font-bold uppercase tracking-wider">CP Mastery</span>
-                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-teal-50 border border-teal-200">
-                        {activeWeights.finals.cp}% Wt
-                      </span>
-                    </div>
-                    <div className="text-base sm:text-lg font-black font-mono text-teal-900">
-                      {cpMasteryPct}%
-                    </div>
-                    <div className="space-y-1">
-                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div
-                          className="bg-teal-500 h-full rounded-full transition-all duration-300"
-                          style={{ width: `${cpMasteryPct}%` }}
-                        />
-                      </div>
-                      <span className="text-[10px] text-slate-500 font-mono font-medium">
-                        {cpTotalScoreSum} / {cpTotalHpsSum} HPS
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Card 3: Enabling Activities (EA) Mastery */}
-                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white shadow-2xs space-y-1.5">
-                    <div className="flex items-center justify-between text-indigo-700">
-                      <span className="text-[10px] font-bold uppercase tracking-wider">EA Mastery</span>
-                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-indigo-50 border border-indigo-200">
-                        {activeWeights.finals.ea}% Wt
-                      </span>
-                    </div>
-                    <div className="text-base sm:text-lg font-black font-mono text-indigo-900">
-                      {eaMasteryPct}%
-                    </div>
-                    <div className="space-y-1">
-                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                        <div
-                          className="bg-indigo-500 h-full rounded-full transition-all duration-300"
-                          style={{ width: `${eaMasteryPct}%` }}
-                        />
-                      </div>
-                      <span className="text-[10px] text-slate-500 font-mono font-medium">
-                        {eaTotalScoreSum} / {eaTotalHpsSum} HPS
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Card 4: Major Performance Tasks with Visual Graphs for MPT & CPT */}
-                  <div className="p-3.5 rounded-xl border border-slate-200/90 bg-white shadow-2xs space-y-2">
-                    <div className="flex items-center justify-between text-blue-700">
-                      <span className="text-[10px] font-bold uppercase tracking-wider">Performance Tasks</span>
-                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-blue-50 border border-blue-200 text-blue-900">
-                        {activeWeights.finals.mpt + activeWeights.finals.cpt}% Wt
-                      </span>
-                    </div>
-
-                    <div className="space-y-1.5 pt-0.5">
-                      {/* MPT Mini Graph */}
-                      <div className="space-y-0.5">
-                        <div className="flex items-center justify-between text-[11px] font-mono">
-                          <span className="text-slate-600 font-semibold">MPT:</span>
-                          <span className="text-slate-900 font-bold">
-                            {mptScore !== null ? mptScore : "-"}/{mptHps || 50}
-                            <span className="text-slate-400 font-normal ml-1">({mptPct}%)</span>
-                          </span>
-                        </div>
-                        <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                          <div
-                            className="bg-blue-600 h-full rounded-full transition-all duration-300"
-                            style={{ width: `${mptScore !== null ? Math.min(100, Math.max(4, mptPct)) : 0}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      {/* CPT Mini Graph */}
-                      <div className="space-y-0.5">
-                        <div className="flex items-center justify-between text-[11px] font-mono">
-                          <span className="text-slate-600 font-semibold">CPT:</span>
-                          <span className="text-slate-900 font-bold">
-                            {cptScore !== null ? cptScore : "-"}/{cptHps || 50}
-                            <span className="text-slate-400 font-normal ml-1">({cptPct}%)</span>
-                          </span>
-                        </div>
-                        <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                          <div
-                            className="bg-purple-600 h-full rounded-full transition-all duration-300"
-                            style={{ width: `${cptScore !== null ? Math.min(100, Math.max(4, cptPct)) : 0}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    <span className="text-[10px] text-slate-400 block truncate font-medium">
-                      Midterm &amp; Final Projects
                     </span>
                   </div>
                 </div>
@@ -2435,9 +2296,6 @@ export default function SectionDetailsPage() {
                       Class Participation (CP)
                     </span>
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 font-bold border border-teal-200">
-                        Finals Wt: {activeWeights.finals.cp}%
-                      </span>
                       <span className="text-[11px] font-mono font-bold text-slate-700">
                         Total: {cpTotalScoreSum} / {cpTotalHpsSum} HPS
                       </span>
@@ -2450,9 +2308,6 @@ export default function SectionDetailsPage() {
                       <div className="text-[11px] font-bold text-teal-900 pb-1.5 border-b border-slate-100 uppercase tracking-wider flex items-center justify-between">
                         <div className="flex items-center gap-1.5">
                           <span>Midterms (Week 1 to Week 7)</span>
-                          <span className="font-mono text-[9px] px-1.5 py-0.2 rounded bg-teal-100/80 text-teal-900 font-bold">
-                            {activeWeights.midterms.cp}% Midterm Wt
-                          </span>
                         </div>
                         <span className="text-[10px] text-slate-600 font-mono font-semibold">
                           Subtotal: {cpMidScoreSum}/{cpMidHpsSum}
@@ -2495,9 +2350,6 @@ export default function SectionDetailsPage() {
                       Enabling Activities (EA)
                     </span>
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 font-bold border border-indigo-200">
-                        Finals Wt: {activeWeights.finals.ea}%
-                      </span>
                       <span className="text-[11px] font-mono font-bold text-slate-700">
                         Total: {eaTotalScoreSum} / {eaTotalHpsSum} HPS
                       </span>
@@ -2510,9 +2362,6 @@ export default function SectionDetailsPage() {
                       <div className="text-[11px] font-bold text-indigo-900 pb-1.5 border-b border-slate-100 uppercase tracking-wider flex items-center justify-between">
                         <div className="flex items-center gap-1.5">
                           <span>Midterms (Week 1 to Week 7)</span>
-                          <span className="font-mono text-[9px] px-1.5 py-0.2 rounded bg-indigo-100/80 text-indigo-900 font-bold">
-                            {activeWeights.midterms.ea}% Midterm Wt
-                          </span>
                         </div>
                         <span className="text-[10px] text-slate-600 font-mono font-semibold">
                           Subtotal: {eaMidScoreSum}/{eaMidHpsSum}
@@ -2556,9 +2405,6 @@ export default function SectionDetailsPage() {
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                         Major PT (MPT)
                       </span>
-                      <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-blue-50 text-blue-800 font-bold border border-blue-200">
-                        Midterm Exam
-                      </span>
                     </div>
                     <div className="text-xs font-semibold text-slate-900 truncate" title={categorizedItems.mpt?.name || "MPT"}>
                       {categorizedItems.mpt?.name || "Major Performance Task"}
@@ -2571,16 +2417,6 @@ export default function SectionDetailsPage() {
                         {mptPct}%
                       </span>
                     </div>
-                    {/* Visual Progress Bar for MPT */}
-                    <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className="bg-blue-600 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${mptScore !== null ? Math.min(100, Math.max(4, mptPct)) : 0}%` }}
-                      />
-                    </div>
-                    <div className="text-[10px] font-mono text-slate-400">
-                      Mid: {activeWeights.midterms.mpt}% | Fin: {activeWeights.finals.mpt}% Wt
-                    </div>
                   </div>
 
                   {/* CPT */}
@@ -2588,9 +2424,6 @@ export default function SectionDetailsPage() {
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                         Culminating PT (CPT)
-                      </span>
-                      <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-purple-50 text-purple-800 font-bold border border-purple-200">
-                        Final Project
                       </span>
                     </div>
                     <div className="text-xs font-semibold text-slate-900 truncate" title={categorizedItems.cpt?.name || "CPT"}>
@@ -2604,16 +2437,6 @@ export default function SectionDetailsPage() {
                         {cptPct}%
                       </span>
                     </div>
-                    {/* Visual Progress Bar for CPT */}
-                    <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className="bg-purple-600 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${cptScore !== null ? Math.min(100, Math.max(4, cptPct)) : 0}%` }}
-                      />
-                    </div>
-                    <div className="text-[10px] font-mono text-slate-400">
-                      Fin: {activeWeights.finals.cpt}% Wt
-                    </div>
                   </div>
 
                   {/* BONUS */}
@@ -2621,9 +2444,6 @@ export default function SectionDetailsPage() {
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                         Bonus Points
-                      </span>
-                      <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 font-bold border border-emerald-200">
-                        Direct Add
                       </span>
                     </div>
                     <div className="text-xs font-semibold text-slate-900 truncate" title={categorizedItems.bonus?.name || "BONUS"}>
