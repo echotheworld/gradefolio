@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
+import { classifyGradeItem, ItemBucket } from "@/lib/grade-calculator";
 import JSZip from "jszip";
 import path from "path";
 import fs from "fs";
@@ -230,15 +231,24 @@ export async function GET(request: Request, { params }: RouteParams) {
     dataXml = updateFormulaCachedValue(dataXml, "O6", 3);
     dataXml = updateFormulaCachedValue(dataXml, "R6", section.sectionName || section.sectionCode);
 
-    // 7. Map Assessment Columns
+    // 7. Map Assessment Columns by Category Bucket so Excel formulas compute accurately
+    const BUCKET_COLS: Record<ItemBucket, string[]> = {
+      cpMid: ["G", "H", "I", "J", "K", "L", "M"],
+      cpFin: ["N", "O", "P", "Q", "R", "S", "T"],
+      eaMid: ["U", "V", "W", "X", "Y", "Z", "AA"],
+      eaFin: ["AB", "AC", "AD", "AE", "AF", "AG", "AH"],
+      mpt: ["AI"],
+      cpt: ["AJ"],
+      bonus: ["AK"],
+    };
     const ALL_ASSESSMENT_COLS = [
-      "G", "H", "I", "J", "K", "L", "M", // CP Mid
-      "N", "O", "P", "Q", "R", "S", "T", // CP Fin
-      "U", "V", "W", "X", "Y", "Z", "AA", // EA Mid
-      "AB", "AC", "AD", "AE", "AF", "AG", "AH", // EA Fin
-      "AI", // MPT
-      "AJ", // CPT
-      "AK", // Bonus
+      ...BUCKET_COLS.cpMid,
+      ...BUCKET_COLS.cpFin,
+      ...BUCKET_COLS.eaMid,
+      ...BUCKET_COLS.eaFin,
+      ...BUCKET_COLS.mpt,
+      ...BUCKET_COLS.cpt,
+      ...BUCKET_COLS.bonus,
     ];
 
     const itemColumnMap = new Map<string, string>();
@@ -258,19 +268,19 @@ export async function GET(request: Request, { params }: RouteParams) {
       }
     }
 
-    let nextColIdx = 0;
     for (const gi of section.gradeItems) {
       if (itemColumnMap.has(gi.id)) continue;
-      while (nextColIdx < ALL_ASSESSMENT_COLS.length && usedCols.has(ALL_ASSESSMENT_COLS[nextColIdx])) {
-        nextColIdx++;
-      }
-      if (nextColIdx < ALL_ASSESSMENT_COLS.length) {
-        const col = ALL_ASSESSMENT_COLS[nextColIdx];
-        dataXml = setCellText(dataXml, `${col}11`, gi.name, "96");
-        dataXml = setCellValue(dataXml, `${col}12`, gi.maxScore, "97");
-        itemColumnMap.set(gi.id, col);
-        usedCols.add(col);
-        nextColIdx++;
+      const bucket = classifyGradeItem(gi);
+      if (!bucket) continue;
+      const candidateCols = BUCKET_COLS[bucket] || ALL_ASSESSMENT_COLS;
+      const freeCol =
+        candidateCols.find((c) => !usedCols.has(c)) ||
+        ALL_ASSESSMENT_COLS.find((c) => !usedCols.has(c));
+      if (freeCol) {
+        dataXml = setCellText(dataXml, `${freeCol}11`, gi.name, "96");
+        dataXml = setCellValue(dataXml, `${freeCol}12`, gi.maxScore, "97");
+        itemColumnMap.set(gi.id, freeCol);
+        usedCols.add(freeCol);
       }
     }
 

@@ -36,6 +36,8 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { StatusChip } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { EditSectionDetailsModal } from "@/components/professor/EditSectionDetailsModal";
+import { ScoreGrid } from "@/components/professor/ScoreGrid";
+import { categorizeGradeItems, computeStudentGradesFromItems } from "@/lib/grade-calculator";
 import { useToast } from "@/components/ui/Toast";
 import { formatDate } from "@/lib/utils";
 import { getCachedData, setCachedData, invalidateCache } from "@/lib/client-cache";
@@ -133,6 +135,7 @@ export default function SectionDetailsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortField, setSortField] = useState<"id" | "name" | "grade">("name");
   const [sortAsc, setSortAsc] = useState(true);
+  const [viewMode, setViewMode] = useState<"list" | "scores">("list");
 
   // Modals
   const [publishModalOpen, setPublishModalOpen] = useState(false);
@@ -320,57 +323,41 @@ export default function SectionDetailsPage() {
     if (!section) {
       return { cpMid: [], cpFin: [], eaMid: [], eaFin: [], mpt: null, cpt: null, bonus: null };
     }
-
-    const cpMid: GradeItem[] = [];
-    const cpFin: GradeItem[] = [];
-    const eaMid: GradeItem[] = [];
-    const eaFin: GradeItem[] = [];
-    let mpt: GradeItem | null = null;
-    let cpt: GradeItem | null = null;
-    let bonus: GradeItem | null = null;
-
-    section.gradeItems.forEach((item) => {
-      const cat = (item.category || "").toLowerCase();
-      const name = item.name.toLowerCase();
-
-      // Check MPT, CPT, Bonus first
-      if (name.includes("mpt") || cat.includes("major pt") || name.includes("midterm exam")) {
-        mpt = item;
-      } else if (name.includes("cpt") || cat.includes("culminating pt") || name.includes("final project")) {
-        cpt = item;
-      } else if (name.includes("bonus") || cat.includes("bonus")) {
-        bonus = item;
-      } else if (cat.includes("class participation") || name.startsWith("cp") || cat.includes("cp")) {
-        if (
-          cat.includes("post") ||
-          cat.includes("final") ||
-          name.includes("final") ||
-          name.includes("post") ||
-          /\b(8|9|10|11|12|13|14)\b/.test(name) ||
-          ["q4", "q5", "sw4"].some((prefix) => name.includes(prefix))
-        ) {
-          cpFin.push(item);
-        } else {
-          cpMid.push(item);
-        }
-      } else if (cat.includes("enabling") || name.startsWith("ea") || cat.includes("ea")) {
-        if (
-          cat.includes("post") ||
-          cat.includes("final") ||
-          name.includes("final") ||
-          name.includes("post") ||
-          /\b(8|9|10|11|12|13|14)\b/.test(name) ||
-          ["l6", "l7", "l8", "fp"].some((prefix) => name.includes(prefix))
-        ) {
-          eaFin.push(item);
-        } else {
-          eaMid.push(item);
-        }
-      }
-    });
-
-    return { cpMid, cpFin, eaMid, eaFin, mpt, cpt, bonus };
+    return categorizeGradeItems(section.gradeItems);
   }, [section]);
+
+  // Optimistic score update for live box-score editing
+  const handleScoreOptimisticChange = (
+    sectionStudentId: string,
+    gradeItemId: string,
+    score: number | null
+  ) => {
+    setSection((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        sectionStudents: prev.sectionStudents.map((ss) => {
+          if (ss.id !== sectionStudentId) return ss;
+          const exists = ss.gradeRecords.some((r) => r.gradeItemId === gradeItemId);
+          const nextRecords = exists
+            ? ss.gradeRecords.map((r) =>
+                r.gradeItemId === gradeItemId
+                  ? { ...r, score, status: score !== null ? "RECORDED" : "NOT_RECORDED" }
+                  : r
+              )
+            : [
+                ...ss.gradeRecords,
+                {
+                  gradeItemId,
+                  score,
+                  status: score !== null ? "RECORDED" : "NOT_RECORDED",
+                },
+              ];
+          return { ...ss, gradeRecords: nextRecords };
+        }),
+      };
+    });
+  };
 
   // Standardized grade formatter: formats consistently as [Equivalent] ([Percentage]%)
   // For failing marks (< 60% or R), it outputs "R (15.56%)" like the others
@@ -436,6 +423,18 @@ export default function SectionDetailsPage() {
 
   // Helper to extract Midterm Grade from StudentRecord (or dynamically compute using activeWeights)
   const getStudentMidtermGrade = (ss: StudentRecord) => {
+    if (section) {
+      const live = computeStudentGradesFromItems(
+        section.gradeItems,
+        ss.gradeRecords,
+        activeWeights,
+        section.subjectName
+      );
+      if (live.hasRecorded && live.midtermGrade) {
+        return live.midtermGrade;
+      }
+    }
+
     let raw: string | null = null;
     let pct: number | null = null;
 
@@ -448,7 +447,6 @@ export default function SectionDetailsPage() {
       }
     }
 
-    // Check if raw already has a percentage e.g. "R (15.56%)" or "58.90%"
     if (raw) {
       const match = raw.match(/([0-9]+(?:\.[0-9]+)?)\s*%/);
       if (match) {
@@ -456,7 +454,6 @@ export default function SectionDetailsPage() {
       }
     }
 
-    // Try finding the midterm item from gradeRecords
     const midItem = section?.gradeItems.find((g) =>
       g.name.toLowerCase().includes("midterm grade") ||
       g.category === "Term Grade" ||
@@ -470,45 +467,26 @@ export default function SectionDetailsPage() {
       }
     }
 
-    // Fallback: compute from active weights
-    if (pct === null) {
-      let cpScore = 0, cpHps = 0, eaScore = 0, eaHps = 0;
-      categorizedItems.cpMid.forEach((it) => {
-        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === it.id);
-        if (r && r.score !== null && r.score !== undefined) cpScore += r.score;
-        cpHps += it.maxScore;
-      });
-      categorizedItems.eaMid.forEach((it) => {
-        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === it.id);
-        if (r && r.score !== null && r.score !== undefined) eaScore += r.score;
-        eaHps += it.maxScore;
-      });
-      let mptScore = 0, mptHps = categorizedItems.mpt?.maxScore || 0;
-      if (categorizedItems.mpt) {
-        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === categorizedItems.mpt!.id);
-        if (r && r.score !== null && r.score !== undefined) mptScore = r.score;
-      }
-      if (cpHps > 0 || eaHps > 0 || mptHps > 0) {
-        const cpPart = cpHps > 0 ? (cpScore / cpHps) * activeWeights.midterms.cp : 0;
-        const eaPart = eaHps > 0 ? (eaScore / eaHps) * activeWeights.midterms.ea : 0;
-        const mptPart = mptHps > 0 ? (mptScore / mptHps) * activeWeights.midterms.mpt : 0;
-        const total = cpPart + eaPart + mptPart;
-        if (total > 0) {
-          pct = Number(total.toFixed(2));
-          if (!raw) raw = `${pct}%`;
-        }
-      }
-    }
-
     return formatGradeValue(raw, pct);
   };
 
   // Helper to extract Final Grade (or dynamically compute using activeWeights)
   const getStudentFinalGrade = (ss: StudentRecord) => {
+    if (section) {
+      const live = computeStudentGradesFromItems(
+        section.gradeItems,
+        ss.gradeRecords,
+        activeWeights,
+        section.subjectName
+      );
+      if (live.hasRecorded && live.finalGrade) {
+        return live.finalGrade;
+      }
+    }
+
     let raw = ss.finalGrade && ss.finalGrade !== "-" ? ss.finalGrade : null;
     let pct: number | null = null;
 
-    // Check if raw already has a percentage e.g. "R (15.56%)" or "3.0 (83.7%)"
     if (raw) {
       const match = raw.match(/([0-9]+(?:\.[0-9]+)?)\s*%/);
       if (match) {
@@ -516,7 +494,6 @@ export default function SectionDetailsPage() {
       }
     }
 
-    // Try finding final grade percentage from gradeItems
     if (pct === null) {
       const finItem = section?.gradeItems.find((g) =>
         g.name.toLowerCase().includes("final grade (%)") ||
@@ -527,47 +504,6 @@ export default function SectionDetailsPage() {
         const rec = ss.gradeRecords.find((r) => r.gradeItemId === finItem.id);
         if (rec && rec.score !== null && rec.score !== undefined) {
           pct = rec.score;
-        }
-      }
-    }
-
-    // Fallback: compute from active weights
-    if (pct === null) {
-      let cpScore = 0, cpHps = 0, eaScore = 0, eaHps = 0;
-      [...categorizedItems.cpMid, ...categorizedItems.cpFin].forEach((it) => {
-        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === it.id);
-        if (r && r.score !== null && r.score !== undefined) cpScore += r.score;
-        cpHps += it.maxScore;
-      });
-      [...categorizedItems.eaMid, ...categorizedItems.eaFin].forEach((it) => {
-        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === it.id);
-        if (r && r.score !== null && r.score !== undefined) eaScore += r.score;
-        eaHps += it.maxScore;
-      });
-      let mptScore = 0, mptHps = categorizedItems.mpt?.maxScore || 0;
-      if (categorizedItems.mpt) {
-        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === categorizedItems.mpt!.id);
-        if (r && r.score !== null && r.score !== undefined) mptScore = r.score;
-      }
-      let cptScore = 0, cptHps = categorizedItems.cpt?.maxScore || 0;
-      if (categorizedItems.cpt) {
-        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === categorizedItems.cpt!.id);
-        if (r && r.score !== null && r.score !== undefined) cptScore = r.score;
-      }
-      let bonus = 0;
-      if (categorizedItems.bonus) {
-        const r = ss.gradeRecords.find((gr) => gr.gradeItemId === categorizedItems.bonus!.id);
-        if (r && r.score !== null && r.score !== undefined) bonus = r.score;
-      }
-      if (cpHps > 0 || eaHps > 0) {
-        const cpPart = cpHps > 0 ? (cpScore / cpHps) * activeWeights.finals.cp : 0;
-        const eaPart = eaHps > 0 ? (eaScore / eaHps) * activeWeights.finals.ea : 0;
-        const mptPart = mptHps > 0 ? (mptScore / mptHps) * activeWeights.finals.mpt : 0;
-        const cptPart = cptHps > 0 ? (cptScore / cptHps) * activeWeights.finals.cpt : 0;
-        const total = cpPart + eaPart + mptPart + cptPart + bonus;
-        if (total > 0) {
-          pct = Number(total.toFixed(2));
-          if (!raw) raw = `${pct}%`;
         }
       }
     }
@@ -1048,8 +984,33 @@ export default function SectionDetailsPage() {
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
         </div>
 
-        {/* Sort & Export controls */}
-        <div className="flex items-center gap-2">
+        {/* View Mode Toggle + Sort controls */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center bg-slate-100 border border-slate-200 rounded-lg p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setViewMode("list")}
+              className={`px-3 py-1 rounded-md font-semibold transition-all cursor-pointer ${
+                viewMode === "list"
+                  ? "bg-white text-slate-900 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Student List
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("scores")}
+              className={`px-3 py-1 rounded-md font-semibold transition-all cursor-pointer ${
+                viewMode === "scores"
+                  ? "bg-blue-600 text-white shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Scores ({section.gradeItems.length} cols)
+            </button>
+          </div>
+
           <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg p-1 text-xs">
             <span className="text-slate-400 px-2 font-medium">Sort:</span>
             <button
@@ -1099,7 +1060,27 @@ export default function SectionDetailsPage() {
         </div>
       </div>
 
-      {/* Student Roster Table */}
+      {/* Student Roster Table OR Score Grid */}
+      {viewMode === "scores" ? (
+        <ScoreGrid
+          sectionId={section.id}
+          sectionCode={section.sectionCode}
+          subjectName={section.subjectName}
+          isPublished={isPublished}
+          weights={activeWeights}
+          gradeItems={section.gradeItems}
+          students={filteredStudents}
+          getMidtermGrade={getStudentMidtermGrade}
+          getFinalGrade={getStudentFinalGrade}
+          onScoreOptimisticChange={handleScoreOptimisticChange}
+          onStructureChanged={async () => {
+            invalidateCache(`gv_sec_${sectionId}`);
+            invalidateCache("prof_sections");
+            await loadSection();
+          }}
+          onSelectStudentBreakdown={(st) => setReviewStudent(st)}
+        />
+      ) : (
       <Card className="border border-slate-200/90 shadow-xs overflow-hidden rounded-xl bg-white">
         <div className="overflow-x-auto relative">
           <table className="w-full text-left text-xs border-collapse">
@@ -1202,6 +1183,7 @@ export default function SectionDetailsPage() {
           <span className="text-[11px] text-slate-400">Click any student row to view full assessment breakdown</span>
         </div>
       </Card>
+      )}
 
       {/* Screen 6: Publish Confirmation Modal */}
       <EditSectionDetailsModal

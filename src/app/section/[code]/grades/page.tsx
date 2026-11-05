@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/Button";
 import { StatusChip } from "@/components/ui/Badge";
 import { BrandLogo } from "@/components/ui/BrandLogo";
 import { getCachedData, setCachedData, invalidateCache } from "@/lib/client-cache";
+import { categorizeGradeItems } from "@/lib/grade-calculator";
 import { IdleSessionTracker } from "@/components/auth/IdleSessionTracker";
 
 interface GradeItemRecord {
@@ -274,55 +275,7 @@ export default function StudentGradeReportPage() {
         bonus: null as GradeItemRecord | null,
       };
     }
-
-    const cpMid: GradeItemRecord[] = [];
-    const cpFin: GradeItemRecord[] = [];
-    const eaMid: GradeItemRecord[] = [];
-    const eaFin: GradeItemRecord[] = [];
-    let mpt: GradeItemRecord | null = null;
-    let cpt: GradeItemRecord | null = null;
-    let bonus: GradeItemRecord | null = null;
-
-    data.breakdown.forEach((item) => {
-      const cat = (item.category || "").toLowerCase();
-      const name = item.name.toLowerCase();
-
-      if (name.includes("mpt") || cat.includes("major pt") || name.includes("midterm exam")) {
-        mpt = item;
-      } else if (name.includes("cpt") || cat.includes("culminating pt") || name.includes("final project")) {
-        cpt = item;
-      } else if (name.includes("bonus") || cat.includes("bonus")) {
-        bonus = item;
-      } else if (cat.includes("class participation") || name.startsWith("cp") || cat.includes("cp")) {
-        if (
-          cat.includes("post") ||
-          cat.includes("final") ||
-          name.includes("final") ||
-          name.includes("post") ||
-          /\b(8|9|10|11|12|13|14)\b/.test(name) ||
-          ["q4", "q5", "sw4"].some((prefix) => name.includes(prefix))
-        ) {
-          cpFin.push(item);
-        } else {
-          cpMid.push(item);
-        }
-      } else if (cat.includes("enabling") || name.startsWith("ea") || cat.includes("ea")) {
-        if (
-          cat.includes("post") ||
-          cat.includes("final") ||
-          name.includes("final") ||
-          name.includes("post") ||
-          /\b(8|9|10|11|12|13|14)\b/.test(name) ||
-          ["l6", "l7", "l8", "fp"].some((prefix) => name.includes(prefix))
-        ) {
-          eaFin.push(item);
-        } else {
-          eaMid.push(item);
-        }
-      }
-    });
-
-    return { cpMid, cpFin, eaMid, eaFin, mpt, cpt, bonus };
+    return categorizeGradeItems(data.breakdown);
   }, [data?.breakdown]);
 
   // Compute analytics, mastery, and weighted totals locally in the browser (0ms, 0 database hit)
