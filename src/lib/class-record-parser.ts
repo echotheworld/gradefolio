@@ -208,7 +208,11 @@ export function getGradeRemarks(gradePoint: string | null): string {
 /**
  * Parses full Class Record Template from worksheet
  */
-export function parseClassRecordTemplate(ws: XLSX.WorkSheet, wb?: XLSX.WorkBook): ClassRecordParseResult {
+export function parseClassRecordTemplate(
+  ws: XLSX.WorkSheet,
+  wb?: XLSX.WorkBook,
+  options?: { overrideMetadata?: Partial<ClassRecordMetadata> }
+): ClassRecordParseResult {
   // If workbook is provided, ensure we target the data sheet ('Input Here' or matching template)
   let activeWs = ws;
   if (wb && wb.SheetNames) {
@@ -252,6 +256,39 @@ export function parseClassRecordTemplate(ws: XLSX.WorkSheet, wb?: XLSX.WorkBook)
     time: getCleanVal("V4"),
     room: getCleanVal("V6"),
   };
+
+  if (options?.overrideMetadata) {
+    if (options.overrideMetadata.facultyName && (!metadata.facultyName || metadata.facultyName === "0")) {
+      metadata.facultyName = options.overrideMetadata.facultyName;
+    }
+    if (options.overrideMetadata.department && (!metadata.department || metadata.department === "0")) {
+      metadata.department = options.overrideMetadata.department;
+    }
+    if (options.overrideMetadata.termAcademicYear && (!metadata.termAcademicYear || metadata.termAcademicYear === "0")) {
+      metadata.termAcademicYear = options.overrideMetadata.termAcademicYear;
+    }
+    if (options.overrideMetadata.subjectTitle && (!metadata.subjectTitle || metadata.subjectTitle === "0")) {
+      metadata.subjectTitle = options.overrideMetadata.subjectTitle;
+    }
+    if (options.overrideMetadata.subjectCode && (!metadata.subjectCode || metadata.subjectCode === "0")) {
+      metadata.subjectCode = options.overrideMetadata.subjectCode;
+    }
+    if (options.overrideMetadata.sectionCode && (!metadata.sectionCode || metadata.sectionCode === "0")) {
+      metadata.sectionCode = options.overrideMetadata.sectionCode;
+    }
+    if (options.overrideMetadata.units && (!metadata.units || metadata.units === 0)) {
+      metadata.units = options.overrideMetadata.units;
+    }
+    if (options.overrideMetadata.day && (!metadata.day || metadata.day === "0")) {
+      metadata.day = options.overrideMetadata.day;
+    }
+    if (options.overrideMetadata.time && (!metadata.time || metadata.time === "0")) {
+      metadata.time = options.overrideMetadata.time;
+    }
+    if (options.overrideMetadata.room && (!metadata.room || metadata.room === "0")) {
+      metadata.room = options.overrideMetadata.room;
+    }
+  }
 
   // 2. Weights Configuration (Rows 4 and 5)
   // Values in template are percentages e.g. 30 -> 0.30
@@ -636,5 +673,308 @@ export function parseClassRecordTemplate(ws: XLSX.WorkSheet, wb?: XLSX.WorkBook)
     assessmentItems,
     students,
     hpsSums,
+  };
+}
+
+export interface MultiSectionSheetSummary {
+  sheetName: string;
+  sheetIndex?: number;
+  sectionCode: string;
+  sectionName: string;
+  subjectCode: string;
+  subjectTitle: string;
+  academicYear: string;
+  term: string;
+  department: string;
+  facultyName: string;
+  units: number;
+  day?: string;
+  time?: string;
+  room?: string;
+  studentCount: number;
+  assessmentCount: number;
+  parsedData: ClassRecordParseResult;
+  isValid: boolean;
+  isEmpty: boolean;
+  warnings: string[];
+}
+
+export interface MultiSectionWorkbookResult {
+  isMultiSection: boolean;
+  coverPageFound: boolean;
+  facultyName: string;
+  academicYear: string;
+  term: string;
+  department: string;
+  sections: MultiSectionSheetSummary[];
+  totalActiveSections: number;
+  totalStudents: number;
+  warnings: string[];
+}
+
+/**
+ * Checks if a sheet name is a non-data / guidance sheet
+ */
+function isNonDataSheet(name: string): boolean {
+  const lower = name.trim().toLowerCase();
+  return (
+    lower.includes("cover") ||
+    lower.includes("instruction") ||
+    lower.includes("guide") ||
+    lower.includes("legend") ||
+    lower.includes("readme") ||
+    lower.includes("summary") ||
+    lower.includes("template")
+  );
+}
+
+/**
+ * Parses a Multi-Section Institutional Class Record Workbook
+ * Supports Cover Page directory mapping as well as sheets named by Section Name (e.g. ACT261, BSCS2A) or Sheet Number (1, 2, 3...)
+ */
+export function parseMultiSectionWorkbook(wb: XLSX.WorkBook): MultiSectionWorkbookResult {
+  const warnings: string[] = [];
+
+  // 1. Detect Cover Page
+  const coverSheetName = wb.SheetNames.find((name) => {
+    const clean = name.trim().toLowerCase();
+    return clean === "cover page" || clean === "cover" || clean === "coverpage";
+  });
+
+  const coverWs = coverSheetName ? wb.Sheets[coverSheetName] : null;
+  const coverPageFound = Boolean(coverWs);
+
+  const getCellStr = (ws: XLSX.WorkSheet | null | undefined, coord: string): string => {
+    if (!ws) return "";
+    const val = ws[coord]?.v;
+    if (val === undefined || val === null || val === "-") return "";
+    return String(val).trim();
+  };
+
+  const getCellNum = (ws: XLSX.WorkSheet | null | undefined, coord: string, fallback: number = 0): number => {
+    if (!ws) return fallback;
+    const val = ws[coord]?.v;
+    if (val === undefined || val === null || val === "-") return fallback;
+    const n = Number(val);
+    return isNaN(n) ? fallback : n;
+  };
+
+  // Cover Page Global Metadata
+  // C13: Faculty Name (C14 is label)
+  // M13: Academic Year (M14 is label)
+  // R13: Term (R14 is label)
+  // C15: Department (C16 is label)
+  let facultyName = getCellStr(coverWs, "C13");
+  if (!facultyName) facultyName = getCellStr(coverWs, "D13");
+
+  let academicYear = getCellStr(coverWs, "M13");
+  if (!academicYear) academicYear = getCellStr(coverWs, "N13");
+
+  let term = getCellStr(coverWs, "R13");
+  if (!term) term = getCellStr(coverWs, "S13");
+
+  let department = getCellStr(coverWs, "C15");
+  if (!department) department = getCellStr(coverWs, "D15");
+
+  // Cover Page directory rows (standard is rows 19 through 28 for 10 sheets)
+  interface CoverEntry {
+    sheetIndex: number;
+    sectionName: string;
+    subjectCode: string;
+    subjectTitle: string;
+    day: string;
+    time: string;
+    room: string;
+    units: number;
+  }
+  const coverEntries: CoverEntry[] = [];
+
+  if (coverWs) {
+    for (let r = 19; r <= 35; r++) {
+      const sheetNumRaw = coverWs[`D${r}`]?.v;
+      const secName = getCellStr(coverWs, `E${r}`);
+      const subjCode = getCellStr(coverWs, `G${r}`);
+      const subjTitle = getCellStr(coverWs, `I${r}`);
+      const day = getCellStr(coverWs, `N${r}`);
+      const time = getCellStr(coverWs, `P${r}`);
+      const room = getCellStr(coverWs, `R${r}`);
+      const units = getCellNum(coverWs, `T${r}`, 3);
+
+      const sheetNum = Number(sheetNumRaw);
+      if ((!isNaN(sheetNum) && sheetNum > 0) || secName || subjCode || subjTitle) {
+        coverEntries.push({
+          sheetIndex: !isNaN(sheetNum) && sheetNum > 0 ? sheetNum : coverEntries.length + 1,
+          sectionName: secName,
+          subjectCode: subjCode,
+          subjectTitle: subjTitle,
+          day,
+          time,
+          room,
+          units: units || 3,
+        });
+      }
+    }
+  }
+
+  // 2. Identify candidate section sheets
+  const candidateSheetNames = wb.SheetNames.filter((name) => !isNonDataSheet(name));
+  const processedSheetNames = new Set<string>();
+  const sectionSummaries: MultiSectionSheetSummary[] = [];
+
+  // Helper to find a worksheet in wb (case-insensitive)
+  const findSheet = (nameOrIndex: string | number): { sheetName: string; ws: XLSX.WorkSheet } | null => {
+    const targetStr = String(nameOrIndex).trim().toLowerCase();
+    for (const sName of wb.SheetNames) {
+      if (sName.trim().toLowerCase() === targetStr) {
+        return { sheetName: sName, ws: wb.Sheets[sName] };
+      }
+    }
+    return null;
+  };
+
+  // 3. Match from Cover Page directory first
+  for (const entry of coverEntries) {
+    // Attempt 1: by section name (e.g. sheet named "ACT261")
+    let match = entry.sectionName ? findSheet(entry.sectionName) : null;
+
+    // Attempt 2: by sheet index (e.g. sheet named "1", "2")
+    if (!match && entry.sheetIndex) {
+      match = findSheet(entry.sheetIndex);
+    }
+
+    // Attempt 3: by sheet index string with prefix (e.g. "Sheet 1" or "Sheet1")
+    if (!match && entry.sheetIndex) {
+      match = findSheet(`Sheet ${entry.sheetIndex}`) || findSheet(`Sheet${entry.sheetIndex}`);
+    }
+
+    if (match && !processedSheetNames.has(match.sheetName)) {
+      processedSheetNames.add(match.sheetName);
+
+      const sectionWs = match.ws;
+      const isTemplate = isClassRecordTemplate(sectionWs, wb);
+
+      const overrideMetadata: Partial<ClassRecordMetadata> = {
+        facultyName: facultyName || undefined,
+        department: department || undefined,
+        termAcademicYear: term && academicYear ? `${term} SY ${academicYear}` : undefined,
+        subjectTitle: entry.subjectTitle || undefined,
+        subjectCode: entry.subjectCode || undefined,
+        sectionCode: entry.sectionName || undefined,
+        units: entry.units || undefined,
+        day: entry.day || undefined,
+        time: entry.time || undefined,
+        room: entry.room || undefined,
+      };
+
+      const parsedData = parseClassRecordTemplate(sectionWs, undefined, { overrideMetadata });
+
+      const cleanCode = (val: string | undefined): string => {
+        if (!val || val === "0" || val === "-" || val === "undefined") return "";
+        return val.trim();
+      };
+
+      const finalSecName = cleanCode(entry.sectionName) || cleanCode(parsedData.metadata.sectionCode) || match.sheetName;
+      const finalSubjTitle = cleanCode(entry.subjectTitle) || cleanCode(parsedData.metadata.subjectTitle) || "Course Section";
+      const finalSubjCode = cleanCode(entry.subjectCode) || cleanCode(parsedData.metadata.subjectCode) || "";
+
+      const studentCount = parsedData.students.length;
+      const assessmentCount = parsedData.assessmentItems.filter((a) => a.code !== "BONUS" || a.name !== "BONUS").length;
+      const isEmpty = studentCount === 0;
+
+      sectionSummaries.push({
+        sheetName: match.sheetName,
+        sheetIndex: entry.sheetIndex,
+        sectionCode: finalSecName,
+        sectionName: finalSecName,
+        subjectCode: finalSubjCode,
+        subjectTitle: finalSubjTitle,
+        academicYear: academicYear || parsedData.metadata.termAcademicYear || "2024-2025",
+        term: term || "1st Term",
+        department: department || parsedData.metadata.department || "",
+        facultyName: facultyName || parsedData.metadata.facultyName || "",
+        units: entry.units || parsedData.metadata.units || 3,
+        day: entry.day || parsedData.metadata.day,
+        time: entry.time || parsedData.metadata.time,
+        room: entry.room || parsedData.metadata.room,
+        studentCount,
+        assessmentCount,
+        parsedData,
+        isValid: isTemplate,
+        isEmpty,
+        warnings: [],
+      });
+    }
+  }
+
+  // 4. Any remaining candidate sheets in the workbook (e.g., sheets not listed in Cover Page, or when no Cover Page exists)
+  for (const sName of candidateSheetNames) {
+    if (processedSheetNames.has(sName)) continue;
+    const sectionWs = wb.Sheets[sName];
+    if (!sectionWs) continue;
+
+    // Check if it looks like a class record sheet
+    if (!isClassRecordTemplate(sectionWs, wb)) continue;
+
+    processedSheetNames.add(sName);
+
+    const overrideMetadata: Partial<ClassRecordMetadata> = {
+      facultyName: facultyName || undefined,
+      department: department || undefined,
+      termAcademicYear: term && academicYear ? `${term} SY ${academicYear}` : undefined,
+      sectionCode: sName,
+    };
+
+    const parsedData = parseClassRecordTemplate(sectionWs, undefined, { overrideMetadata });
+
+    const cleanCode = (val: string | undefined): string => {
+      if (!val || val === "0" || val === "-" || val === "undefined") return "";
+      return val.trim();
+    };
+
+    const finalSecName = cleanCode(parsedData.metadata.sectionCode) || sName;
+    const finalSubjTitle = cleanCode(parsedData.metadata.subjectTitle) || "Course Section";
+    const finalSubjCode = cleanCode(parsedData.metadata.subjectCode) || "";
+
+    const studentCount = parsedData.students.length;
+    const assessmentCount = parsedData.assessmentItems.filter((a) => a.code !== "BONUS" || a.name !== "BONUS").length;
+    const isEmpty = studentCount === 0;
+
+    sectionSummaries.push({
+      sheetName: sName,
+      sectionCode: finalSecName,
+      sectionName: finalSecName,
+      subjectCode: finalSubjCode,
+      subjectTitle: finalSubjTitle,
+      academicYear: academicYear || parsedData.metadata.termAcademicYear || "2024-2025",
+      term: term || "1st Term",
+      department: department || parsedData.metadata.department || "",
+      facultyName: facultyName || parsedData.metadata.facultyName || "",
+      units: parsedData.metadata.units || 3,
+      day: parsedData.metadata.day,
+      time: parsedData.metadata.time,
+      room: parsedData.metadata.room,
+      studentCount,
+      assessmentCount,
+      parsedData,
+      isValid: true,
+      isEmpty,
+      warnings: [],
+    });
+  }
+
+  const activeSections = sectionSummaries.filter((s) => !s.isEmpty && s.studentCount > 0);
+  const totalStudents = activeSections.reduce((sum, s) => sum + s.studentCount, 0);
+
+  return {
+    isMultiSection: sectionSummaries.length > 1 || coverPageFound,
+    coverPageFound,
+    facultyName,
+    academicYear,
+    term,
+    department,
+    sections: sectionSummaries,
+    totalActiveSections: activeSections.length,
+    totalStudents,
+    warnings,
   };
 }

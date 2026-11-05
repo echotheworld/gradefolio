@@ -25,10 +25,12 @@ import {
   UploadCloud,
   X,
   Check,
+  Layers,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { StatusChip } from "@/components/ui/Badge";
+import { MasterWorkbookImportModal } from "@/components/professor/MasterWorkbookImportModal";
 import { formatDate } from "@/lib/utils";
 import { isRValue } from "@/lib/snapshot";
 import { getCachedData, setCachedData } from "@/lib/client-cache";
@@ -94,8 +96,9 @@ export default function ProfessorDashboardPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | "PUBLISHED" | "DRAFT">("ALL");
 
-  // Fast Import Modal state
+  // Fast Import & Master Import Modal states
   const [isFastImportOpen, setIsFastImportOpen] = useState(false);
+  const [isMasterImportOpen, setIsMasterImportOpen] = useState(false);
 
   const loadDashboardData = async () => {
     try {
@@ -228,6 +231,16 @@ export default function ProfessorDashboardPage() {
 
           {/* Quick Action Dock */}
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsMasterImportOpen(true)}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200/90 transition-all shadow-2xs cursor-pointer"
+              title="Upload master institutional class record with Cover Page and multiple sections"
+            >
+              <Layers className="w-4 h-4 text-blue-600" />
+              <span>Master Workbook</span>
+            </button>
+
             <button
               type="button"
               onClick={() => setIsFastImportOpen(true)}
@@ -780,6 +793,15 @@ export default function ProfessorDashboardPage() {
           </div>
         </div>
       )}
+      {/* 5. MASTER MULTI-SECTION WORKBOOK IMPORT MODAL */}
+      <MasterWorkbookImportModal
+        isOpen={isMasterImportOpen}
+        onClose={() => setIsMasterImportOpen(false)}
+        onSuccess={() => {
+          setIsMasterImportOpen(false);
+          loadDashboardData();
+        }}
+      />
     </div>
   );
 }
