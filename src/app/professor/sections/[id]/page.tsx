@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   FileSpreadsheet,
+  FileText,
   KeyRound,
   Download,
   Share2,
@@ -34,6 +35,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { StatusChip } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
+import { EditSectionDetailsModal } from "@/components/professor/EditSectionDetailsModal";
 import { useToast } from "@/components/ui/Toast";
 import { formatDate } from "@/lib/utils";
 import { getCachedData, setCachedData, invalidateCache } from "@/lib/client-cache";
@@ -136,6 +138,7 @@ export default function SectionDetailsPage() {
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [unpublishModalOpen, setUnpublishModalOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [editDetailsOpen, setEditDetailsOpen] = useState(false);
   const [reviewStudent, setReviewStudent] = useState<StudentRecord | null>(null);
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [deleteSectionModalOpen, setDeleteSectionModalOpen] = useState(false);
@@ -872,6 +875,17 @@ export default function SectionDetailsPage() {
               <Button
                 size="sm"
                 variant="outline"
+                onClick={() => setEditDetailsOpen(true)}
+                className="gap-1.5 text-xs font-semibold"
+                title="Edit details or re-upload the classlist PDF"
+              >
+                <FileText className="w-3.5 h-3.5 text-slate-600" />
+                <span>Edit Details</span>
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
                 onClick={() => setSettingsModalOpen(true)}
                 className="gap-1.5 text-xs font-semibold"
               >
@@ -1195,6 +1209,18 @@ export default function SectionDetailsPage() {
       </Card>
 
       {/* Screen 6: Publish Confirmation Modal */}
+      <EditSectionDetailsModal
+        isOpen={editDetailsOpen}
+        onClose={() => setEditDetailsOpen(false)}
+        section={section}
+        onApplied={async (message) => {
+          toast({ type: "success", title: "Section Updated", message });
+          invalidateCache("prof_sections");
+          invalidateCache("admin_sections");
+          await loadSection();
+        }}
+      />
+
       <Modal
         isOpen={publishModalOpen}
         onClose={() => setPublishModalOpen(false)}
