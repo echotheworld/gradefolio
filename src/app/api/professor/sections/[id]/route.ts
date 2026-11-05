@@ -54,11 +54,17 @@ export async function GET(request: Request, { params }: RouteParams) {
             finalGradeStatus: true,
             remarks: true,
             credentialStatus: true,
+            dateEnrolled: true,
+            enrollmentStatus: true,
             student: {
               select: {
                 id: true,
                 studentNumber: true,
                 displayName: true,
+                course: true,
+                strand: true,
+                gender: true,
+                email: true,
               },
             },
             gradeRecords: {

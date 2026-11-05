@@ -9,9 +9,19 @@ export interface ParsedClasslistStudent {
   gender?: string;
   email?: string;
   status?: string;
+  dateEnrolled?: string;
+}
+
+export interface ClasslistSchedule {
+  day: string;
+  time: string;
+  roomType: string;
+  room: string;
 }
 
 export interface ClasslistParseResult {
+  offeredTo?: string;
+  schedules?: ClasslistSchedule[];
   success: boolean;
   academicYear: string;
   term: string;
@@ -95,6 +105,7 @@ export function parseClasslistText(fullText: string): ClasslistParseResult {
   let sectionName = "";
   let instructor = "";
   let classLimit = 40;
+  let offeredTo = "";
   const students: ParsedClasslistStudent[] = [];
   const seenIds = new Set<string>();
 
@@ -149,6 +160,34 @@ export function parseClasslistText(fullText: string): ClasslistParseResult {
       const num = parseInt(lines[i + 1], 10);
       if (!isNaN(num)) classLimit = num;
     }
+
+    // Offered To: line is 'Offered To', next line is 'Continuing'
+    if (l.toLowerCase() === "offered to" && lines[i + 1]) {
+      offeredTo = lines[i + 1].trim();
+    } else if (l.match(/^Offered\s+To\s*:?\s*(.+)$/i)) {
+      offeredTo = l.match(/^Offered\s+To\s*:?\s*(.+)$/i)![1].trim();
+    }
+  }
+
+  // Subject schedules: rows of "#, Day, Time, Room Type, Room" between headers
+  const schedules: ClasslistSchedule[] = [];
+  const schedStart = lines.findIndex((l) => /^SUBJECT SCHEDULES$/i.test(l));
+  const schedEnd = lines.findIndex((l) => /^LIST OF STUDENTS$/i.test(l));
+  if (schedStart >= 0) {
+    const end = schedEnd > schedStart ? schedEnd : lines.length;
+    let k = schedStart + 1;
+    // skip header labels
+    while (k < end && /^(#|Day|Time|Room Type|Room)$/i.test(lines[k])) k++;
+    while (k + 4 < end) {
+      if (!/^\d+$/.test(lines[k] || "")) break;
+      schedules.push({
+        day: lines[k + 1] || "",
+        time: lines[k + 2] || "",
+        roomType: lines[k + 3] || "",
+        room: lines[k + 4] || "",
+      });
+      k += 5;
+    }
   }
 
   // 2. Second pass: Multi-line student extraction (standard Registrar PDF layout)
@@ -172,12 +211,17 @@ export function parseClasslistText(fullText: string): ClasslistParseResult {
       const email = lines[i + 5] || "";
 
       let status = "Enrolled";
+      let dateEnrolled = "";
       for (let j = 1; j <= 4; j++) {
         const candidate = lines[i + 5 + j];
+        if (candidate && /^\d{4}-\d{2}-\d{2}$/.test(candidate)) {
+          dateEnrolled = candidate;
+        }
         if (candidate && /^(Enrolled|Registered|Official)$/i.test(candidate)) {
           status = candidate;
           break;
         }
+        if (candidate && studentIdRegex.test(candidate)) break;
       }
 
       students.push({
@@ -189,6 +233,7 @@ export function parseClasslistText(fullText: string): ClasslistParseResult {
         gender: gender.toUpperCase(),
         email,
         status,
+        dateEnrolled,
       });
     }
   }
@@ -231,6 +276,8 @@ export function parseClasslistText(fullText: string): ClasslistParseResult {
     sectionName: sectionName || "Section 1",
     instructor,
     classLimit,
+    offeredTo,
+    schedules,
     students,
     totalStudents: students.length,
   };

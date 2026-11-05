@@ -71,6 +71,11 @@ export async function POST(request: Request) {
       term,
       sectionCode: customCode,
       announcement,
+      subjectCode,
+      instructor,
+      offeredTo,
+      classLimit,
+      schedules,
       showFinalGrade = true,
       showBreakdown = true,
       showProvisionalNotice = true,
@@ -116,6 +121,23 @@ export async function POST(request: Request) {
         academicYear,
         term,
         announcement: announcement || null,
+        subjectCode: (subjectCode || "").toString().trim() || null,
+        instructor: (instructor || "").toString().trim() || null,
+        offeredTo: (offeredTo || "").toString().trim() || null,
+        classLimit: Number.isFinite(parseInt(classLimit, 10)) ? parseInt(classLimit, 10) : null,
+        schedules:
+          Array.isArray(schedules) && schedules.length > 0
+            ? JSON.stringify(
+                schedules
+                  .filter((s: any) => s && (s.day || s.time || s.room))
+                  .map((s: any) => ({
+                    day: String(s.day || ""),
+                    time: String(s.time || ""),
+                    roomType: String(s.roomType || ""),
+                    room: String(s.room || ""),
+                  }))
+              )
+            : null,
         status: "DRAFT",
         showFinalGrade: Boolean(showFinalGrade),
         showBreakdown: Boolean(showBreakdown),
@@ -142,14 +164,21 @@ export async function POST(request: Request) {
               where: { studentNumber },
             });
 
+            const extra = {
+              course: String(st.course || "").trim() || null,
+              strand: String(st.strand || "").trim() || null,
+              gender: String(st.gender || "").trim() || null,
+              email: String(st.email || "").trim() || null,
+            };
+
             if (!student) {
               student = await prisma.student.create({
-                data: { studentNumber, displayName },
+                data: { studentNumber, displayName, ...extra },
               });
-            } else if (displayName && student.displayName !== displayName) {
+            } else {
               await prisma.student.update({
                 where: { id: student.id },
-                data: { displayName },
+                data: { displayName, ...extra },
               });
             }
 
@@ -171,6 +200,8 @@ export async function POST(request: Request) {
                 studentId: student.id,
                 credentialHash: hashedPassword,
                 credentialStatus: "ACTIVE",
+                dateEnrolled: String(st.dateEnrolled || "").trim() || null,
+                enrollmentStatus: String(st.status || "").trim() || null,
               },
             });
 

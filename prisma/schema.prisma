@@ -33,6 +33,11 @@ model Section {
   academicYear         String
   term                 String
   announcement         String?
+  subjectCode          String?
+  instructor           String?
+  offeredTo            String?
+  classLimit           Int?
+  schedules            String?          @db.Text // JSON array of {day,time,roomType,room}
   status               String           @default("DRAFT") // "DRAFT" | "PUBLISHED" | "ARCHIVED"
   showFinalGrade       Boolean          @default(true)
   showBreakdown        Boolean          @default(true)
@@ -53,6 +58,10 @@ model Student {
   id              String           @id @default(uuid())
   studentNumber   String           @unique
   displayName     String
+  course          String?
+  strand          String?
+  gender          String?
+  email           String?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
   sectionStudents SectionStudent[]
@@ -70,6 +79,8 @@ model SectionStudent {
   finalGrade       String?
   finalGradeStatus String        @default("PROVISIONAL") // "PROVISIONAL" | "FINAL" | "NOT_RECORDED" | "MISSING"
   remarks          String?
+  dateEnrolled     String?
+  enrollmentStatus String?
   publishedSnapshot String?      @db.Text
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt

@@ -38,13 +38,25 @@ interface ParsedStudent {
   gender?: string;
   email?: string;
   status?: string;
+  dateEnrolled?: string;
+}
+
+interface ScheduleRow {
+  day: string;
+  time: string;
+  roomType: string;
+  room: string;
 }
 
 export default function CreateSectionPage() {
   const router = useRouter();
   const [formData, setFormData] = useState({
     subjectName: "",
+    subjectCode: "",
     sectionName: "",
+    instructor: "",
+    offeredTo: "",
+    classLimit: "",
     academicYear: "2026-2027",
     term: "Term 1",
     sectionCode: "",
@@ -63,6 +75,7 @@ export default function CreateSectionPage() {
     message: string;
   }>({ checked: false, available: true, message: "" });
   const [error, setError] = useState("");
+  const [schedules, setSchedules] = useState<ScheduleRow[]>([]);
 
   // PDF Drag & Drop / Classlist Parsing State
   const [isDragging, setIsDragging] = useState(false);
@@ -183,6 +196,7 @@ export default function CreateSectionPage() {
       const { metadata, students, fileName } = data;
       setPdfFileName(fileName || "classlist.pdf");
       setParsedStudents(students || []);
+      if (Array.isArray(metadata.schedules)) setSchedules(metadata.schedules);
       setAutoEnroll(true);
       setShowRosterPreview(true);
 
@@ -190,6 +204,13 @@ export default function CreateSectionPage() {
       setFormData((prev) => ({
         ...prev,
         subjectName: metadata.subjectName || prev.subjectName,
+        subjectCode: metadata.subjectCode || prev.subjectCode,
+        instructor: metadata.instructor || prev.instructor,
+        offeredTo: metadata.offeredTo || prev.offeredTo,
+        classLimit:
+          metadata.classLimit !== undefined && metadata.classLimit !== null
+            ? String(metadata.classLimit)
+            : prev.classLimit,
         sectionName: metadata.sectionName || prev.sectionName,
         academicYear: metadata.academicYear || prev.academicYear,
         term: metadata.term || prev.term,
@@ -257,6 +278,7 @@ export default function CreateSectionPage() {
     try {
       const payload: any = {
         ...formData,
+        schedules: schedules.filter((s) => s.day || s.time || s.room),
         students: autoEnroll ? parsedStudents : [],
       };
 
@@ -601,6 +623,118 @@ export default function CreateSectionPage() {
                   />
                 </div>
 
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Subject Code
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.subjectCode}
+                    onChange={(e) => setFormData({ ...formData, subjectCode: e.target.value })}
+                    placeholder="e.g. BAITBUSL"
+                    className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 font-mono font-medium"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Instructor
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.instructor}
+                    onChange={(e) => setFormData({ ...formData, instructor: e.target.value })}
+                    placeholder="e.g. 26-05121: MR. JERICHO JAN M. FEOLINO"
+                    className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 font-medium"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Offered To
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.offeredTo}
+                    onChange={(e) => setFormData({ ...formData, offeredTo: e.target.value })}
+                    placeholder="e.g. Continuing"
+                    className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 font-medium"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Class Limit
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={formData.classLimit}
+                    onChange={(e) => setFormData({ ...formData, classLimit: e.target.value })}
+                    placeholder="e.g. 40"
+                    className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 font-mono font-medium"
+                  />
+                </div>
+
+                <div className="sm:col-span-2">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                      Subject Schedules
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSchedules([...schedules, { day: "", time: "", roomType: "Lec", room: "" }])
+                      }
+                      className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 cursor-pointer"
+                    >
+                      + Add schedule
+                    </button>
+                  </div>
+                  {schedules.length === 0 ? (
+                    <p className="text-[11px] text-slate-400">
+                      No schedule yet. Upload a classlist PDF or add one manually.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {schedules.map((s, idx) => (
+                        <div key={idx} className="grid grid-cols-2 sm:grid-cols-[1fr_1.4fr_0.8fr_1fr_auto] gap-2">
+                          {(["day", "time", "roomType", "room"] as const).map((field) => (
+                            <input
+                              key={field}
+                              type="text"
+                              value={s[field]}
+                              onChange={(e) =>
+                                setSchedules(
+                                  schedules.map((r, i) => (i === idx ? { ...r, [field]: e.target.value } : r))
+                                )
+                              }
+                              placeholder={
+                                field === "day"
+                                  ? "Day"
+                                  : field === "time"
+                                  ? "01:00PM - 03:00PM"
+                                  : field === "roomType"
+                                  ? "Lec / Lab"
+                                  : "Room"
+                              }
+                              className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            />
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setSchedules(schedules.filter((_, i) => i !== idx))}
+                            className="px-2 text-slate-400 hover:text-rose-600 cursor-pointer"
+                            title="Remove schedule"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                     Optional Announcement to Students
@@ -667,7 +801,9 @@ export default function CreateSectionPage() {
                           <th className="py-2.5 px-3">Student ID</th>
                           <th className="py-2.5 px-3">Student Name</th>
                           <th className="py-2.5 px-3">Course / Strand</th>
+                          <th className="py-2.5 px-3">Gender</th>
                           <th className="py-2.5 px-3">Official Email</th>
+                          <th className="py-2.5 px-3">Date Enrolled</th>
                           <th className="py-2.5 px-3 text-right">Status</th>
                         </tr>
                       </thead>
@@ -686,9 +822,11 @@ export default function CreateSectionPage() {
                             <td className="py-2 px-3 text-slate-600 font-sans">
                               {st.course || "—"} {st.strand ? `(${st.strand})` : ""}
                             </td>
+                            <td className="py-2 px-3 text-slate-600 font-sans">{st.gender || "—"}</td>
                             <td className="py-2 px-3 text-slate-500 text-[11px]">
                               {st.email || "—"}
                             </td>
+                            <td className="py-2 px-3 text-slate-600 font-sans">{st.dateEnrolled || "—"}</td>
                             <td className="py-2 px-3 text-right font-sans">
                               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
                                 {st.status || "Enrolled"}

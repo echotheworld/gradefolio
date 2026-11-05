@@ -94,6 +94,8 @@ export async function POST(request: Request) {
         sectionName: parseResult.sectionName,
         instructor: parseResult.instructor,
         classLimit: parseResult.classLimit,
+        offeredTo: parseResult.offeredTo || "",
+        schedules: parseResult.schedules || [],
         suggestedCode,
         codeAvailable,
       },

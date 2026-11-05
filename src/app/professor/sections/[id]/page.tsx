@@ -52,7 +52,13 @@ interface StudentRecord {
     id: string;
     studentNumber: string;
     displayName: string;
+    course?: string | null;
+    strand?: string | null;
+    gender?: string | null;
+    email?: string | null;
   };
+  dateEnrolled?: string | null;
+  enrollmentStatus?: string | null;
   finalGrade: string | null;
   finalGradeStatus: string | null;
   remarks: string | null;
@@ -72,6 +78,13 @@ interface SectionData {
   academicYear: string;
   term: string;
   announcement: string | null;
+  subjectCode?: string | null;
+  instructor?: string | null;
+  offeredTo?: string | null;
+  classLimit?: number | null;
+  schedules?: string | null;
+  ownerProfessor?: { displayName: string; email: string };
+  createdAt?: string;
   status: string;
   publishedAt: string | null;
   updatedAt: string;
@@ -842,6 +855,13 @@ export default function SectionDetailsPage() {
                 </Button>
               </Link>
 
+              <a href={`/api/professor/sections/${section.id}/export?format=xlsx`} download>
+                <Button size="sm" variant="outline" className="gap-1.5 text-xs font-semibold">
+                  <Download className="w-3.5 h-3.5 text-slate-600" />
+                  <span>Export Sheet</span>
+                </Button>
+              </a>
+
               <Link href={`/professor/sections/${section.id}/credentials`}>
                 <Button size="sm" variant="outline" className="gap-1.5 text-xs font-semibold">
                   <KeyRound className="w-3.5 h-3.5 text-slate-600" />
@@ -923,6 +943,81 @@ export default function SectionDetailsPage() {
             </button>
           </div>
         )}
+
+        {/* Section Information (from official classlist) */}
+        {(() => {
+          let scheduleRows: Array<{ day: string; time: string; roomType: string; room: string }> = [];
+          try {
+            scheduleRows = section.schedules ? JSON.parse(section.schedules) : [];
+          } catch {
+            scheduleRows = [];
+          }
+          const enrolled = section.sectionStudents.length;
+          const info: Array<[string, React.ReactNode]> = [
+            ["Subject Code", section.subjectCode || "—"],
+            ["Subject Name", section.subjectName],
+            ["Section", section.sectionName],
+            ["Section Access Code", section.sectionCode],
+            ["Academic Year", section.academicYear],
+            ["Term", section.term],
+            ["Instructor", section.instructor || section.ownerProfessor?.displayName || "—"],
+            ["Offered To", section.offeredTo || "—"],
+            [
+              "Class Limit",
+              section.classLimit !== null && section.classLimit !== undefined
+                ? `${enrolled} / ${section.classLimit} enrolled`
+                : `${enrolled} enrolled`,
+            ],
+          ];
+          return (
+            <div className="px-6 sm:px-7 py-5 bg-slate-50/50 border-t border-slate-100 space-y-4">
+              <h3 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                Section Details
+              </h3>
+              <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3">
+                {info.map(([label, value]) => (
+                  <div key={label}>
+                    <dt className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{label}</dt>
+                    <dd className="text-xs font-semibold text-slate-900 mt-0.5 break-words">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <div>
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+                  Subject Schedules
+                </div>
+                {scheduleRows.length === 0 ? (
+                  <p className="text-xs text-slate-400">No schedule recorded.</p>
+                ) : (
+                  <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 text-slate-600 font-semibold">
+                        <tr>
+                          <th className="px-3 py-2 w-10">#</th>
+                          <th className="px-3 py-2">Day</th>
+                          <th className="px-3 py-2">Time</th>
+                          <th className="px-3 py-2">Room Type</th>
+                          <th className="px-3 py-2">Room</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {scheduleRows.map((r, i) => (
+                          <tr key={i}>
+                            <td className="px-3 py-2 text-slate-400">{i + 1}</td>
+                            <td className="px-3 py-2 font-medium text-slate-800">{r.day}</td>
+                            <td className="px-3 py-2 text-slate-700">{r.time}</td>
+                            <td className="px-3 py-2 text-slate-700">{r.roomType}</td>
+                            <td className="px-3 py-2 text-slate-700">{r.room}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </Card>
 
       {/* Gradebook Surface Toolbar */}
@@ -987,21 +1082,6 @@ export default function SectionDetailsPage() {
             </button>
           </div>
 
-          {/* Export Dropdown / Buttons */}
-          <div className="flex items-center gap-1.5">
-            <a href="/template.xlsx" download="class_record_template.xlsx" title="Download Official Class Record Template">
-              <Button size="sm" variant="outline" className="gap-1.5 text-xs text-slate-700 bg-white hover:bg-slate-50">
-                <FileSpreadsheet className="w-3.5 h-3.5 text-blue-600" />
-                <span>Download Template</span>
-              </Button>
-            </a>
-            <a href={`/api/professor/sections/${section.id}/export?format=xlsx`} download>
-              <Button size="sm" variant="outline" className="gap-1.5 text-xs">
-                <Download className="w-3.5 h-3.5 text-slate-600" />
-                <span>Export Sheet</span>
-              </Button>
-            </a>
-          </div>
         </div>
       </div>
 
@@ -1054,6 +1134,11 @@ export default function SectionDetailsPage() {
                       </td>
                       <td className="px-5 py-3.5 font-semibold text-slate-900 truncate max-w-[220px]">
                         {ss.student.displayName}
+                        {(ss.student.course || ss.student.email) && (
+                          <span className="block text-[10px] font-normal text-slate-400 truncate">
+                            {[ss.student.course, ss.student.strand, ss.student.email].filter(Boolean).join(" • ")}
+                          </span>
+                        )}
                       </td>
                       <td className="px-5 py-3.5 font-mono font-medium text-slate-700">
                         {midtermGrade !== "-" ? (
