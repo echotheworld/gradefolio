@@ -28,6 +28,7 @@ import {
   TrendingUp,
   Award,
   Activity,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
@@ -124,8 +125,30 @@ export default function SectionDetailsPage() {
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [reviewStudent, setReviewStudent] = useState<StudentRecord | null>(null);
   const [resetModalOpen, setResetModalOpen] = useState(false);
+  const [deleteSectionModalOpen, setDeleteSectionModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [isDeletingSection, setIsDeletingSection] = useState(false);
+  const [deleteSectionError, setDeleteSectionError] = useState("");
+
+  const handleDeleteSection = async () => {
+    if (!section) return;
+    setIsDeletingSection(true);
+    setDeleteSectionError("");
+    try {
+      const res = await fetch(`/api/professor/sections/${section.id}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to delete section");
+      }
+      router.push("/professor");
+    } catch (err: any) {
+      setDeleteSectionError(err.message || "Failed to delete section");
+      setIsDeletingSection(false);
+    }
+  };
 
   // Settings form state (including customizable weights)
   const [settingsForm, setSettingsForm] = useState({
@@ -843,6 +866,20 @@ export default function SectionDetailsPage() {
               >
                 <RotateCcw className="w-3.5 h-3.5 text-rose-500" />
                 <span>Reset Section</span>
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setDeleteSectionError("");
+                  setDeleteSectionModalOpen(true);
+                }}
+                className="gap-1.5 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200"
+                title="Permanently delete this entire section"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                <span>Delete Section</span>
               </Button>
 
               {isPublished ? (
@@ -1611,6 +1648,86 @@ export default function SectionDetailsPage() {
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>Confirm &amp; Reset Section</span>
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Delete Section Confirmation Modal */}
+      <Modal
+        isOpen={deleteSectionModalOpen}
+        onClose={() => {
+          if (!isDeletingSection) setDeleteSectionModalOpen(false);
+        }}
+        title="Delete Course Section"
+        description={`Permanently delete ${section.sectionCode} - ${section.sectionName}`}
+        maxWidth="md"
+      >
+        <div className="p-6 space-y-4 text-xs">
+          {deleteSectionError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 text-xs font-semibold">
+              {deleteSectionError}
+            </div>
+          )}
+
+          <div className="rounded-xl bg-rose-50 border border-rose-200 p-4 text-rose-900 space-y-2">
+            <h4 className="font-bold flex items-center gap-1.5 text-sm text-rose-800">
+              <AlertTriangle className="w-4 h-4 text-rose-600" />
+              <span>Permanent Deletion Warning</span>
+            </h4>
+            <p className="text-xs leading-relaxed text-rose-700">
+              Are you sure you want to permanently delete section{" "}
+              <strong className="font-mono text-rose-950">{section.sectionCode}</strong> (
+              {section.subjectName})?
+            </p>
+            <p className="text-xs text-rose-700">
+              This will permanently delete{" "}
+              <strong>{section.sectionStudents.length} student records</strong>, all{" "}
+              <strong>{section.gradeItems.length} grade items</strong>, scores, and snapshot history.
+              This action cannot be undone.
+            </p>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-slate-600">
+            <div className="font-semibold text-slate-800">Section Summary:</div>
+            <div className="flex justify-between">
+              <span>Section Name:</span>
+              <span className="font-bold text-slate-800 font-mono">{section.sectionName}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Course:</span>
+              <span className="text-slate-800 truncate max-w-[200px]">{section.subjectName}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Enrolled:</span>
+              <span className="text-slate-800 font-semibold">{section.sectionStudents.length} students</span>
+            </div>
+          </div>
+
+          <div className="pt-4 flex items-center justify-end gap-2 border-t border-slate-100">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteSectionModalOpen(false)}
+              disabled={isDeletingSection}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handleDeleteSection}
+              disabled={isDeletingSection}
+              className="gap-1.5 font-semibold bg-rose-600 hover:bg-rose-700"
+            >
+              {isDeletingSection ? (
+                <span>Deleting Section...</span>
+              ) : (
+                <>
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Confirm &amp; Delete Section</span>
+                </>
+              )}
             </Button>
           </div>
         </div>

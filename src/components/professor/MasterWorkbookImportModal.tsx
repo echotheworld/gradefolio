@@ -391,16 +391,25 @@ export function MasterWorkbookImportModal({
                 </div>
               </div>
 
-              {/* Sample Class Record Test Button */}
-              <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                <span className="text-xs text-slate-500">Want to test without a file?</span>
+              {/* Template Download & Inspect Links */}
+              <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+                <a
+                  href="/class_record.xlsx"
+                  download="master_class_record.xlsx"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 transition-colors"
+                  title="Download the official National University Master Class Record template with Cover Page and 10 section sheets"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Download Blank Master Workbook (.xlsx)</span>
+                </a>
+
                 <button
                   type="button"
                   onClick={handleUseSample}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200/80 transition-colors cursor-pointer"
                 >
-                  <FileSpreadsheet className="w-3.5 h-3.5" />
-                  <span>Inspect Template (class_record.xlsx)</span>
+                  <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Inspect Template Preview</span>
                 </button>
               </div>
             </div>

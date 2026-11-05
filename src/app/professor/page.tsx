@@ -26,9 +26,11 @@ import {
   X,
   Check,
   Layers,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { Modal } from "@/components/ui/Modal";
 import { StatusChip } from "@/components/ui/Badge";
 import { MasterWorkbookImportModal } from "@/components/professor/MasterWorkbookImportModal";
 import { formatDate } from "@/lib/utils";
@@ -99,6 +101,32 @@ export default function ProfessorDashboardPage() {
   // Fast Import & Master Import Modal states
   const [isFastImportOpen, setIsFastImportOpen] = useState(false);
   const [isMasterImportOpen, setIsMasterImportOpen] = useState(false);
+
+  // Delete Section state
+  const [sectionToDelete, setSectionToDelete] = useState<SectionItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  const handleDeleteSection = async () => {
+    if (!sectionToDelete) return;
+    setIsDeleting(true);
+    setDeleteError("");
+    try {
+      const res = await fetch(`/api/professor/sections/${sectionToDelete.id}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to delete section");
+      }
+      setSectionToDelete(null);
+      await loadDashboardData();
+    } catch (err: any) {
+      setDeleteError(err.message || "Failed to delete section");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const loadDashboardData = async () => {
     try {
@@ -250,6 +278,16 @@ export default function ProfessorDashboardPage() {
               <UploadCloud className="w-4 h-4 text-blue-600" />
               <span>Fast Import</span>
             </button>
+
+            <a
+              href="/class_record.xlsx"
+              download="master_class_record.xlsx"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 hover:border-slate-300 transition-all shadow-2xs"
+              title="Download official Master Class Record (Multi-Section with Cover Page, 3.6 MB)"
+            >
+              <Download className="w-4 h-4 text-emerald-600" />
+              <span>Master Workbook (.xlsx)</span>
+            </a>
 
             <a
               href="/template.xlsx"
@@ -564,6 +602,19 @@ export default function ProfessorDashboardPage() {
                         >
                           <FileSpreadsheet className="w-4 h-4" />
                         </Link>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDeleteError("");
+                            setSectionToDelete(section);
+                          }}
+                          title="Delete Section"
+                          className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors border border-transparent hover:border-rose-200 cursor-pointer inline-flex items-center justify-center"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
 
                       <Link
@@ -802,6 +853,91 @@ export default function ProfessorDashboardPage() {
           loadDashboardData();
         }}
       />
+
+      {/* 6. DELETE SECTION CONFIRMATION MODAL */}
+      <Modal
+        isOpen={Boolean(sectionToDelete)}
+        onClose={() => {
+          if (!isDeleting) setSectionToDelete(null);
+        }}
+        title="Delete Course Section"
+        description="Permanently remove this section and all associated records"
+        maxWidth="md"
+      >
+        {sectionToDelete && (
+          <div className="p-6 space-y-4 text-xs">
+            {deleteError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 text-xs font-semibold">
+                {deleteError}
+              </div>
+            )}
+
+            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 space-y-2">
+              <div className="flex items-center gap-2 font-bold text-sm text-rose-800">
+                <AlertTriangle className="w-4 h-4 text-rose-600" />
+                <span>Permanent Deletion Warning</span>
+              </div>
+              <p className="text-xs text-rose-700 leading-relaxed">
+                You are about to delete{" "}
+                <strong className="font-semibold text-rose-950 font-mono">
+                  {sectionToDelete.sectionCode}
+                </strong>{" "}
+                ({sectionToDelete.subjectName}).
+              </p>
+              <p className="text-xs text-rose-700">
+                This will permanently delete{" "}
+                <strong>{sectionToDelete._count.sectionStudents} enrolled student records</strong>,{" "}
+                gradebook items, assessment scores, and snapshots. This action cannot be undone.
+              </p>
+            </div>
+
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-slate-600">
+              <div className="font-semibold text-slate-800">Section Summary:</div>
+              <div className="flex justify-between">
+                <span>Section Name:</span>
+                <span className="font-bold text-slate-800 font-mono">{sectionToDelete.sectionName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Course:</span>
+                <span className="text-slate-800 truncate max-w-[200px]">{sectionToDelete.subjectName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Term / AY:</span>
+                <span className="text-slate-800">{sectionToDelete.term} &bull; {sectionToDelete.academicYear}</span>
+              </div>
+            </div>
+
+            <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setSectionToDelete(null)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={handleDeleteSection}
+                disabled={isDeleting}
+                className="gap-1.5 font-bold bg-rose-600 hover:bg-rose-700 shadow-xs"
+              >
+                {isDeleting ? (
+                  <span>Deleting Section...</span>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Section</span>
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
