@@ -104,6 +104,7 @@ export default function ProfessorDashboardPage() {
 
   // Delete Section state
   const [sectionToDelete, setSectionToDelete] = useState<SectionItem | null>(null);
+  const [confirmCodeInput, setConfirmCodeInput] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
@@ -120,6 +121,7 @@ export default function ProfessorDashboardPage() {
         throw new Error(data.error || "Failed to delete section");
       }
       setSectionToDelete(null);
+      setConfirmCodeInput("");
       await loadDashboardData();
     } catch (err: any) {
       setDeleteError(err.message || "Failed to delete section");
@@ -608,6 +610,7 @@ export default function ProfessorDashboardPage() {
                             e.preventDefault();
                             e.stopPropagation();
                             setDeleteError("");
+                            setConfirmCodeInput("");
                             setSectionToDelete(section);
                           }}
                           title="Delete Section"
@@ -907,12 +910,46 @@ export default function ProfessorDashboardPage() {
               </div>
             </div>
 
+            {/* Confirmation input with copy/paste disabled */}
+            <div className="space-y-1.5 pt-1">
+              <label className="block text-xs font-semibold text-slate-700">
+                To confirm deletion, please type{" "}
+                <span
+                  className="font-mono font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded select-none border border-rose-200 cursor-not-allowed"
+                  onCopy={(e) => e.preventDefault()}
+                  title="Copying is disabled for security verification"
+                >
+                  {sectionToDelete.sectionCode}
+                </span>{" "}
+                below:
+              </label>
+              <input
+                type="text"
+                value={confirmCodeInput}
+                onChange={(e) => setConfirmCodeInput(e.target.value)}
+                onPaste={(e) => {
+                  e.preventDefault();
+                }}
+                placeholder={`Type ${sectionToDelete.sectionCode} to confirm`}
+                className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-rose-500 focus:border-rose-500 placeholder:text-slate-400"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <p className="text-[11px] text-slate-400 italic">
+                * Copy &amp; paste is disabled. Please type the section code manually.
+              </p>
+            </div>
+
             <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setSectionToDelete(null)}
+                onClick={() => {
+                  setSectionToDelete(null);
+                  setConfirmCodeInput("");
+                }}
                 disabled={isDeleting}
               >
                 Cancel
@@ -922,8 +959,12 @@ export default function ProfessorDashboardPage() {
                 variant="destructive"
                 size="sm"
                 onClick={handleDeleteSection}
-                disabled={isDeleting}
-                className="gap-1.5 font-bold bg-rose-600 hover:bg-rose-700 shadow-xs"
+                disabled={
+                  isDeleting ||
+                  confirmCodeInput.trim().toUpperCase() !==
+                    sectionToDelete.sectionCode.trim().toUpperCase()
+                }
+                className="gap-1.5 font-bold bg-rose-600 hover:bg-rose-700 shadow-xs disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {isDeleting ? (
                   <span>Deleting Section...</span>

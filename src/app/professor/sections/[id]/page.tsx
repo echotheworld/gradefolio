@@ -126,6 +126,7 @@ export default function SectionDetailsPage() {
   const [reviewStudent, setReviewStudent] = useState<StudentRecord | null>(null);
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [deleteSectionModalOpen, setDeleteSectionModalOpen] = useState(false);
+  const [confirmDeleteCode, setConfirmDeleteCode] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [isDeletingSection, setIsDeletingSection] = useState(false);
@@ -143,6 +144,7 @@ export default function SectionDetailsPage() {
       if (!res.ok) {
         throw new Error(data.error || "Failed to delete section");
       }
+      setConfirmDeleteCode("");
       router.push("/professor");
     } catch (err: any) {
       setDeleteSectionError(err.message || "Failed to delete section");
@@ -873,6 +875,7 @@ export default function SectionDetailsPage() {
                 variant="outline"
                 onClick={() => {
                   setDeleteSectionError("");
+                  setConfirmDeleteCode("");
                   setDeleteSectionModalOpen(true);
                 }}
                 className="gap-1.5 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200"
@@ -1704,11 +1707,45 @@ export default function SectionDetailsPage() {
             </div>
           </div>
 
+          {/* Confirmation input with copy/paste disabled */}
+          <div className="space-y-1.5 pt-1">
+            <label className="block text-xs font-semibold text-slate-700">
+              To confirm deletion, please type{" "}
+              <span
+                className="font-mono font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded select-none border border-rose-200 cursor-not-allowed"
+                onCopy={(e) => e.preventDefault()}
+                title="Copying is disabled for security verification"
+              >
+                {section.sectionCode}
+              </span>{" "}
+              below:
+            </label>
+            <input
+              type="text"
+              value={confirmDeleteCode}
+              onChange={(e) => setConfirmDeleteCode(e.target.value)}
+              onPaste={(e) => {
+                e.preventDefault();
+              }}
+              placeholder={`Type ${section.sectionCode} to confirm`}
+              className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-rose-500 focus:border-rose-500 placeholder:text-slate-400"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            <p className="text-[11px] text-slate-400 italic">
+              * Copy &amp; paste is disabled. Please type the section code manually.
+            </p>
+          </div>
+
           <div className="pt-4 flex items-center justify-end gap-2 border-t border-slate-100">
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setDeleteSectionModalOpen(false)}
+              onClick={() => {
+                setDeleteSectionModalOpen(false);
+                setConfirmDeleteCode("");
+              }}
               disabled={isDeletingSection}
             >
               Cancel
@@ -1717,8 +1754,11 @@ export default function SectionDetailsPage() {
               size="sm"
               variant="destructive"
               onClick={handleDeleteSection}
-              disabled={isDeletingSection}
-              className="gap-1.5 font-semibold bg-rose-600 hover:bg-rose-700"
+              disabled={
+                isDeletingSection ||
+                confirmDeleteCode.trim().toUpperCase() !== section.sectionCode.trim().toUpperCase()
+              }
+              className="gap-1.5 font-semibold bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {isDeletingSection ? (
                 <span>Deleting Section...</span>
