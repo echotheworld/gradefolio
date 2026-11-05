@@ -31,6 +31,7 @@ interface Props {
   onClose: () => void;
   section: EditableSection;
   onApplied: (message: string) => void;
+  currentStudents?: Array<{ studentNumber: string; displayName: string }>;
 }
 
 const inputCls =
@@ -44,7 +45,7 @@ function parseSchedules(raw?: string | null): ScheduleRow[] {
   }
 }
 
-export function EditSectionDetailsModal({ isOpen, onClose, section, onApplied }: Props) {
+export function EditSectionDetailsModal({ isOpen, onClose, section, onApplied, currentStudents = [] }: Props) {
   const [step, setStep] = useState<"edit" | "review">("edit");
   const [form, setForm] = useState({
     subjectName: "",
@@ -302,6 +303,8 @@ export function EditSectionDetailsModal({ isOpen, onClose, section, onApplied }:
               </div>
             </div>
 
+            <RosterPanel current={currentStudents} incoming={students} />
+
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
               <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
               <Button size="sm" onClick={handleReview} isLoading={isWorking} disabled={isParsing} className="gap-1.5">
@@ -416,6 +419,101 @@ export function EditSectionDetailsModal({ isOpen, onClose, section, onApplied }:
         )}
       </div>
     </Modal>
+  );
+}
+
+function RosterPanel({
+  current,
+  incoming,
+}: {
+  current: Array<{ studentNumber: string; displayName: string }>;
+  incoming: any[] | null;
+}) {
+  const [filter, setFilter] = useState<"all" | "new" | "removed" | "same">("all");
+
+  const currentMap = new Map(current.map((s) => [s.studentNumber, s]));
+  const incomingMap = new Map((incoming || []).map((s) => [String(s.studentNumber), s]));
+
+  type Row = { studentNumber: string; displayName: string; state: "new" | "removed" | "same" | "current" };
+  const rows: Row[] = [];
+  if (!incoming) {
+    current.forEach((s) => rows.push({ ...s, state: "current" }));
+  } else {
+    incoming.forEach((s) =>
+      rows.push({
+        studentNumber: String(s.studentNumber),
+        displayName: s.displayName,
+        state: currentMap.has(String(s.studentNumber)) ? "same" : "new",
+      })
+    );
+    current.forEach((s) => {
+      if (!incomingMap.has(s.studentNumber)) rows.push({ ...s, state: "removed" });
+    });
+  }
+  rows.sort((a, b) => a.studentNumber.localeCompare(b.studentNumber));
+
+  const counts = {
+    new: rows.filter((r) => r.state === "new").length,
+    removed: rows.filter((r) => r.state === "removed").length,
+    same: rows.filter((r) => r.state === "same").length,
+  };
+  const shown = filter === "all" || !incoming ? rows : rows.filter((r) => r.state === filter);
+
+  const badge = {
+    new: "bg-emerald-50 text-emerald-800 border-emerald-200",
+    removed: "bg-rose-50 text-rose-800 border-rose-200",
+    same: "bg-slate-50 text-slate-600 border-slate-200",
+    current: "bg-slate-50 text-slate-600 border-slate-200",
+  };
+  const label = { new: "Will be added", removed: "Will be removed", same: "Stays", current: "Enrolled" };
+
+  return (
+    <div className="rounded-xl border border-slate-200 overflow-hidden">
+      <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+        <span className="font-bold text-slate-800">
+          {incoming ? "Student list comparison" : `Current students (${current.length})`}
+        </span>
+        {incoming && (
+          <div className="flex gap-1.5 text-[11px] font-semibold">
+            {(
+              [
+                ["all", `All (${rows.length})`],
+                ["new", `+ Added (${counts.new})`],
+                ["removed", `− Removed (${counts.removed})`],
+                ["same", `Same (${counts.same})`],
+              ] as const
+            ).map(([k, t]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setFilter(k)}
+                className={`px-2 py-0.5 rounded-md border cursor-pointer ${
+                  filter === k ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200"
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="max-h-56 overflow-y-auto divide-y divide-slate-100">
+        {shown.length === 0 ? (
+          <p className="p-3 text-slate-400">No students.</p>
+        ) : (
+          shown.map((r) => (
+            <div key={r.studentNumber} className="px-3 py-1.5 flex items-center justify-between gap-2">
+              <span className={r.state === "removed" ? "line-through text-slate-400" : ""}>
+                <span className="font-mono font-semibold">{r.studentNumber}</span> {r.displayName}
+              </span>
+              <span className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold border ${badge[r.state]}`}>
+                {label[r.state]}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
 

@@ -1213,6 +1213,10 @@ export default function SectionDetailsPage() {
         isOpen={editDetailsOpen}
         onClose={() => setEditDetailsOpen(false)}
         section={section}
+        currentStudents={section.sectionStudents.map((s) => ({
+          studentNumber: s.student.studentNumber,
+          displayName: s.student.displayName,
+        }))}
         onApplied={async (message) => {
           toast({ type: "success", title: "Section Updated", message });
           invalidateCache("prof_sections");
