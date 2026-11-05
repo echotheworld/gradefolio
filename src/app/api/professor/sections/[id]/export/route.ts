@@ -19,7 +19,12 @@ function escapeXml(str: string | number | null | undefined): string {
     .replace(/'/g, "&apos;");
 }
 
-function setCellText(xml: string, cellCoord: string, text: string | null | undefined, defaultStyle: string = "231"): string {
+function setCellText(
+  xml: string,
+  cellCoord: string,
+  text: string | null | undefined,
+  defaultStyle: string = "231"
+): string {
   if (text === null || text === undefined) return xml;
   const escaped = escapeXml(text);
   const regex = new RegExp(`<c r="${cellCoord}"[^>]*\\/>|<c r="${cellCoord}"[^>]*>[\\s\\S]*?<\\/c>`);
@@ -33,7 +38,12 @@ function setCellText(xml: string, cellCoord: string, text: string | null | undef
   return xml;
 }
 
-function setCellValue(xml: string, cellCoord: string, val: number | string | null | undefined, defaultStyle: string = "100"): string {
+function setCellValue(
+  xml: string,
+  cellCoord: string,
+  val: number | string | null | undefined,
+  defaultStyle: string = "100"
+): string {
   if (val === null || val === undefined) return xml;
   const regex = new RegExp(`<c r="${cellCoord}"[^>]*\\/>|<c r="${cellCoord}"[^>]*>[\\s\\S]*?<\\/c>`);
   if (regex.test(xml)) {
@@ -44,6 +54,14 @@ function setCellValue(xml: string, cellCoord: string, val: number | string | nul
     });
   }
   return xml;
+}
+
+function updateFormulaCachedValue(xml: string, cellCoord: string, val: string | number): string {
+  const regex = new RegExp(`(<c r="${cellCoord}"[^>]*>.*?<v>)([^<]*)(<\\/v><\\/c>)`);
+  if (regex.test(xml)) {
+    return xml.replace(regex, `$1${escapeXml(val)}$3`);
+  }
+  return setCellText(xml, cellCoord, String(val));
 }
 
 export async function GET(request: Request, { params }: RouteParams) {
@@ -79,9 +97,9 @@ export async function GET(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // 1. Locate base template:
-    // Priority 1: User's uploaded template for this section (if one exists)
-    // Priority 2: public/grading_sheet_v3.xlsx (official styled institutional template with full drawings/logos)
+    // 1. Locate base template file:
+    // Priority 1: User's uploaded template for this section
+    // Priority 2: public/grading_sheet_v3.xlsx (official National University visual template)
     // Priority 3: public/template.xlsx
     const sectionUploadDir = path.join(process.cwd(), "storage", "sections", section.id);
     const uploadedFilePath = path.join(sectionUploadDir, "uploaded_template.xlsx");
@@ -116,20 +134,32 @@ export async function GET(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "Template file not found" }, { status: 404 });
     }
 
-    // 2. Load the binary file directly via JSZip
-    // This PRESERVES 100% of the design, logos, banners, drawings, theme colors, and PowerPoint-like elements
+    // 2. Load the binary file directly into JSZip
+    // This PRESERVES 100% of logos, theme colors, drawing XML, headers, shapes, and formulas
     const fileBuffer = fs.readFileSync(exportFilePath);
     const zip = await JSZip.loadAsync(fileBuffer);
 
-    // 3. Resolve sheet XML paths using xl/workbook.xml & xl/_rels/workbook.xml.rels
+    // 3. Remove calcChain.xml and its relationships to prevent Excel file-level validation repair popup
+    zip.remove("xl/calcChain.xml");
+
+    let relsXml = await zip.file("xl/_rels/workbook.xml.rels")?.async("text");
+    if (relsXml) {
+      relsXml = relsXml.replace(/<Relationship[^>]*Target="calcChain\.xml"[^>]*\/>/g, "");
+      zip.file("xl/_rels/workbook.xml.rels", relsXml);
+    }
+
+    let ctXml = await zip.file("[Content_Types].xml")?.async("text");
+    if (ctXml) {
+      ctXml = ctXml.replace(/<Override[^>]*PartName="\/xl\/calcChain\.xml"[^>]*\/>/g, "");
+      zip.file("[Content_Types].xml", ctXml);
+    }
+
+    // 4. Resolve worksheet paths from workbook.xml
     let coverSheetPath = "xl/worksheets/sheet1.xml";
     let dataSheetPath = "xl/worksheets/sheet2.xml";
 
     const wbXml = await zip.file("xl/workbook.xml")?.async("text");
-    const relsXml = await zip.file("xl/_rels/workbook.xml.rels")?.async("text");
-
     if (wbXml && relsXml) {
-      // Find rId for "Input Here" or "1"
       const dataSheetMatch =
         wbXml.match(/<sheet[^>]*name="Input Here"[^>]*r:id="([^"]+)"/) ||
         wbXml.match(/<sheet[^>]*name="1"[^>]*r:id="([^"]+)"/) ||
@@ -144,7 +174,6 @@ export async function GET(request: Request, { params }: RouteParams) {
         }
       }
 
-      // Find rId for "Cover Page"
       const coverMatch = wbXml.match(/<sheet[^>]*name="Cover Page"[^>]*r:id="([^"]+)"/);
       if (coverMatch) {
         const rId = coverMatch[1];
@@ -156,52 +185,52 @@ export async function GET(request: Request, { params }: RouteParams) {
       }
     }
 
-    // 4. Update Cover Page if it exists
+    // 5. Update Cover Page (sheet1.xml)
     let coverXml = await zip.file(coverSheetPath)?.async("text");
     if (coverXml) {
       if (section.ownerProfessor?.displayName) {
-        coverXml = setCellText(coverXml, "C13", section.ownerProfessor.displayName);
+        coverXml = setCellText(coverXml, "C13", section.ownerProfessor.displayName, "231");
       }
       if (section.academicYear) {
-        coverXml = setCellText(coverXml, "M13", section.academicYear);
+        coverXml = setCellText(coverXml, "M13", section.academicYear, "18");
       }
       if (section.term) {
-        coverXml = setCellText(coverXml, "R13", section.term);
+        coverXml = setCellText(coverXml, "R13", section.term, "18");
       }
-      coverXml = setCellText(coverXml, "E19", section.sectionName || section.sectionCode);
+      coverXml = setCellText(coverXml, "E19", section.sectionName || section.sectionCode, "18");
 
       const subjParts = section.subjectName.split(" - ");
       const code = subjParts.length > 1 ? subjParts[0] : "";
       const title = subjParts.length > 1 ? subjParts.slice(1).join(" - ") : section.subjectName;
 
-      coverXml = setCellText(coverXml, "G19", code);
-      coverXml = setCellText(coverXml, "I19", title);
+      coverXml = setCellText(coverXml, "G19", code, "18");
+      coverXml = setCellText(coverXml, "I19", title, "18");
+      coverXml = setCellValue(coverXml, "T19", 3, "18");
 
       zip.file(coverSheetPath, coverXml);
     }
 
-    // 5. Update Target Data Sheet (Input Here)
+    // 6. Update Target Data Sheet (sheet2.xml / Input Here)
     let dataXml = await zip.file(dataSheetPath)?.async("text");
     if (!dataXml) {
       return NextResponse.json({ error: "Worksheet data not found in template" }, { status: 500 });
     }
 
-    // Populate Header Metadata on Data Sheet
-    if (section.ownerProfessor?.displayName) {
-      dataXml = setCellText(dataXml, "G2", section.ownerProfessor.displayName, "147");
-    }
-    dataXml = setCellText(dataXml, "G6", `${section.term} SY ${section.academicYear}`, "147");
-
+    // Populate header values while preserving their Cover Page formulas
     const subjParts = section.subjectName.split(" - ");
     const code = subjParts.length > 1 ? subjParts[0] : "";
     const title = subjParts.length > 1 ? subjParts.slice(1).join(" - ") : section.subjectName;
 
-    dataXml = setCellText(dataXml, "O2", title, "147");
-    dataXml = setCellText(dataXml, "O4", code, "147");
-    dataXml = setCellValue(dataXml, "O6", 3, "147");
-    dataXml = setCellText(dataXml, "R6", section.sectionName || section.sectionCode, "151");
+    if (section.ownerProfessor?.displayName) {
+      dataXml = updateFormulaCachedValue(dataXml, "G2", section.ownerProfessor.displayName);
+    }
+    dataXml = updateFormulaCachedValue(dataXml, "G6", `${section.term} SY ${section.academicYear}`);
+    dataXml = updateFormulaCachedValue(dataXml, "O2", title);
+    dataXml = updateFormulaCachedValue(dataXml, "O4", code);
+    dataXml = updateFormulaCachedValue(dataXml, "O6", 3);
+    dataXml = updateFormulaCachedValue(dataXml, "R6", section.sectionName || section.sectionCode);
 
-    // 6. Map Assessment Columns
+    // 7. Map Assessment Columns
     const ALL_ASSESSMENT_COLS = [
       "G", "H", "I", "J", "K", "L", "M", // CP Mid
       "N", "O", "P", "Q", "R", "S", "T", // CP Fin
@@ -215,7 +244,6 @@ export async function GET(request: Request, { params }: RouteParams) {
     const itemColumnMap = new Map<string, string>();
     const usedCols = new Set<string>();
 
-    // Pass 1: Match existing item names in row 11
     for (const col of ALL_ASSESSMENT_COLS) {
       const match = dataXml.match(new RegExp(`<c r="${col}11"[^>]*><is><t>([^<]+)<\\/t><\\/is><\\/c>`));
       const colTitle = match ? match[1].trim() : "";
@@ -230,7 +258,6 @@ export async function GET(request: Request, { params }: RouteParams) {
       }
     }
 
-    // Pass 2: Place any unmapped gradeItems into available columns
     let nextColIdx = 0;
     for (const gi of section.gradeItems) {
       if (itemColumnMap.has(gi.id)) continue;
@@ -247,13 +274,13 @@ export async function GET(request: Request, { params }: RouteParams) {
       }
     }
 
-    // 7. Write All Enrolled Students (Starting at Row 13)
+    // 8. Write Enrolled Students Starting at Row 13
     for (let idx = 0; idx < section.sectionStudents.length; idx++) {
       const secSt = section.sectionStudents[idx];
       const r = 13 + idx;
 
       if (r <= 62) {
-        // Row exists pre-styled in template
+        // Pre-existing styled rows in template
         dataXml = setCellValue(dataXml, `B${r}`, idx + 1, "6");
         dataXml = setCellText(dataXml, `C${r}`, secSt.student.studentNumber, "61");
         dataXml = setCellText(dataXml, `D${r}`, secSt.student.displayName, "62");
@@ -268,17 +295,12 @@ export async function GET(request: Request, { params }: RouteParams) {
           }
         }
 
-        // Final Grade
-        if (secSt.finalGrade) {
-          dataXml = setCellText(dataXml, `AO${r}`, secSt.finalGrade, "39");
-        }
-
-        // Remarks
+        // Remarks (AP)
         if (secSt.remarks) {
           dataXml = setCellText(dataXml, `AP${r}`, secSt.remarks, "106");
         }
       } else {
-        // Extra student rows beyond row 62: construct a full styled row before </sheetData>
+        // Extended rows beyond row 62: construct cleanly styled row before </sheetData>
         let extraCells = `<c r="B${r}" s="6"><v>${idx + 1}</v></c><c r="C${r}" s="61" t="inlineStr"><is><t>${escapeXml(secSt.student.studentNumber)}</t></is></c><c r="D${r}" s="62" t="inlineStr"><is><t>${escapeXml(secSt.student.displayName)}</t></is></c>`;
 
         if (secSt.gradeRecords && secSt.gradeRecords.length > 0) {
@@ -290,9 +312,6 @@ export async function GET(request: Request, { params }: RouteParams) {
           }
         }
 
-        if (secSt.finalGrade) {
-          extraCells += `<c r="AO${r}" s="39" t="inlineStr"><is><t>${escapeXml(secSt.finalGrade)}</t></is></c>`;
-        }
         if (secSt.remarks) {
           extraCells += `<c r="AP${r}" s="106" t="inlineStr"><is><t>${escapeXml(secSt.remarks)}</t></is></c>`;
         }
@@ -304,8 +323,7 @@ export async function GET(request: Request, { params }: RouteParams) {
 
     zip.file(dataSheetPath, dataXml);
 
-    // 8. Generate the finalized buffer directly from the updated zip
-    // This guarantees 100% preservation of drawings, logos, images, themes, and styles
+    // 9. Generate final package
     const outputBuffer = await zip.generateAsync({
       type: "nodebuffer",
       compression: "DEFLATE",
