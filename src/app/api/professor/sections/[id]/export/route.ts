@@ -1,12 +1,49 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
-import * as XLSX from "xlsx";
+import JSZip from "jszip";
 import path from "path";
 import fs from "fs";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
+}
+
+function escapeXml(str: string | number | null | undefined): string {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function setCellText(xml: string, cellCoord: string, text: string | null | undefined, defaultStyle: string = "231"): string {
+  if (text === null || text === undefined) return xml;
+  const escaped = escapeXml(text);
+  const regex = new RegExp(`<c r="${cellCoord}"[^>]*\\/>|<c r="${cellCoord}"[^>]*>[\\s\\S]*?<\\/c>`);
+  if (regex.test(xml)) {
+    return xml.replace(regex, (match) => {
+      const sMatch = match.match(/s="(\d+)"/);
+      const style = sMatch ? sMatch[1] : defaultStyle;
+      return `<c r="${cellCoord}" s="${style}" t="inlineStr"><is><t>${escaped}</t></is></c>`;
+    });
+  }
+  return xml;
+}
+
+function setCellValue(xml: string, cellCoord: string, val: number | string | null | undefined, defaultStyle: string = "100"): string {
+  if (val === null || val === undefined) return xml;
+  const regex = new RegExp(`<c r="${cellCoord}"[^>]*\\/>|<c r="${cellCoord}"[^>]*>[\\s\\S]*?<\\/c>`);
+  if (regex.test(xml)) {
+    return xml.replace(regex, (match) => {
+      const sMatch = match.match(/s="(\d+)"/);
+      const style = sMatch ? sMatch[1] : defaultStyle;
+      return `<c r="${cellCoord}" s="${style}"><v>${val}</v></c>`;
+    });
+  }
+  return xml;
 }
 
 export async function GET(request: Request, { params }: RouteParams) {
@@ -42,11 +79,10 @@ export async function GET(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // 1. Locate base template file:
-    // Priority 1: Uploaded template for this section
-    // Priority 2: public/template.xlsx
-    // Priority 3: public/class_record.xlsx
-    // Priority 4: public/grading_sheet_v3.xlsx
+    // 1. Locate base template:
+    // Priority 1: User's uploaded template for this section (if one exists)
+    // Priority 2: public/grading_sheet_v3.xlsx (official styled institutional template with full drawings/logos)
+    // Priority 3: public/template.xlsx
     const sectionUploadDir = path.join(process.cwd(), "storage", "sections", section.id);
     const uploadedFilePath = path.join(sectionUploadDir, "uploaded_template.xlsx");
     let originalFileName: string | null = null;
@@ -64,9 +100,9 @@ export async function GET(request: Request, { params }: RouteParams) {
       exportFilePath = uploadedFilePath;
     } else {
       const candidates = [
+        path.join(process.cwd(), "public", "grading_sheet_v3.xlsx"),
         path.join(process.cwd(), "public", "template.xlsx"),
         path.join(process.cwd(), "public", "class_record.xlsx"),
-        path.join(process.cwd(), "public", "grading_sheet_v3.xlsx"),
       ];
       for (const candidate of candidates) {
         if (fs.existsSync(candidate)) {
@@ -80,73 +116,97 @@ export async function GET(request: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "Template file not found" }, { status: 404 });
     }
 
-    // 2. Read template workbook with XLSX
+    // 2. Load the binary file directly via JSZip
+    // This PRESERVES 100% of the design, logos, banners, drawings, theme colors, and PowerPoint-like elements
     const fileBuffer = fs.readFileSync(exportFilePath);
-    const wb = XLSX.read(fileBuffer, { type: "buffer" });
+    const zip = await JSZip.loadAsync(fileBuffer);
 
-    // 3. Locate target data sheet
-    let targetSheetName =
-      wb.SheetNames.find((n) => n === "Input Here") ||
-      wb.SheetNames.find((n) => n === "1") ||
-      wb.SheetNames.find(
-        (n) => n.trim().toLowerCase() === section.sectionName.trim().toLowerCase()
-      ) ||
-      wb.SheetNames.find(
-        (n) => !n.toLowerCase().includes("cover") && !n.toLowerCase().includes("instruction")
-      ) ||
-      wb.SheetNames[0];
+    // 3. Resolve sheet XML paths using xl/workbook.xml & xl/_rels/workbook.xml.rels
+    let coverSheetPath = "xl/worksheets/sheet1.xml";
+    let dataSheetPath = "xl/worksheets/sheet2.xml";
 
-    const ws = wb.Sheets[targetSheetName];
-    if (!ws) {
-      return NextResponse.json({ error: "Worksheet not found in template" }, { status: 500 });
+    const wbXml = await zip.file("xl/workbook.xml")?.async("text");
+    const relsXml = await zip.file("xl/_rels/workbook.xml.rels")?.async("text");
+
+    if (wbXml && relsXml) {
+      // Find rId for "Input Here" or "1"
+      const dataSheetMatch =
+        wbXml.match(/<sheet[^>]*name="Input Here"[^>]*r:id="([^"]+)"/) ||
+        wbXml.match(/<sheet[^>]*name="1"[^>]*r:id="([^"]+)"/) ||
+        wbXml.match(/<sheet[^>]*r:id="([^"]+)"/);
+
+      if (dataSheetMatch) {
+        const rId = dataSheetMatch[1];
+        const relMatch = relsXml.match(new RegExp(`<Relationship[^>]*Id="${rId}"[^>]*Target="([^"]+)"`));
+        if (relMatch) {
+          const target = relMatch[1].replace(/^\/?/, "");
+          dataSheetPath = target.startsWith("xl/") ? target : `xl/${target}`;
+        }
+      }
+
+      // Find rId for "Cover Page"
+      const coverMatch = wbXml.match(/<sheet[^>]*name="Cover Page"[^>]*r:id="([^"]+)"/);
+      if (coverMatch) {
+        const rId = coverMatch[1];
+        const relMatch = relsXml.match(new RegExp(`<Relationship[^>]*Id="${rId}"[^>]*Target="([^"]+)"`));
+        if (relMatch) {
+          const target = relMatch[1].replace(/^\/?/, "");
+          coverSheetPath = target.startsWith("xl/") ? target : `xl/${target}`;
+        }
+      }
     }
 
-    // 4. Update Cover Page if present
-    const coverSheetName = wb.SheetNames.find((n) => {
-      const clean = n.trim().toLowerCase();
-      return clean === "cover page" || clean === "cover";
-    });
-    if (coverSheetName && wb.Sheets[coverSheetName]) {
-      const cp = wb.Sheets[coverSheetName];
+    // 4. Update Cover Page if it exists
+    let coverXml = await zip.file(coverSheetPath)?.async("text");
+    if (coverXml) {
       if (section.ownerProfessor?.displayName) {
-        cp["C13"] = { v: section.ownerProfessor.displayName, t: "s" };
+        coverXml = setCellText(coverXml, "C13", section.ownerProfessor.displayName);
       }
       if (section.academicYear) {
-        cp["M13"] = { v: section.academicYear, t: "s" };
+        coverXml = setCellText(coverXml, "M13", section.academicYear);
       }
       if (section.term) {
-        cp["R13"] = { v: section.term, t: "s" };
+        coverXml = setCellText(coverXml, "R13", section.term);
       }
-      cp["E19"] = { v: section.sectionName || section.sectionCode, t: "s" };
+      coverXml = setCellText(coverXml, "E19", section.sectionName || section.sectionCode);
 
       const subjParts = section.subjectName.split(" - ");
       const code = subjParts.length > 1 ? subjParts[0] : "";
       const title = subjParts.length > 1 ? subjParts.slice(1).join(" - ") : section.subjectName;
-      cp["G19"] = { v: code, t: "s" };
-      cp["I19"] = { v: title, t: "s" };
+
+      coverXml = setCellText(coverXml, "G19", code);
+      coverXml = setCellText(coverXml, "I19", title);
+
+      zip.file(coverSheetPath, coverXml);
     }
 
-    // 5. Populate Header Metadata on the target data sheet
-    if (section.ownerProfessor?.displayName) {
-      ws["G2"] = { v: section.ownerProfessor.displayName, t: "s" };
+    // 5. Update Target Data Sheet (Input Here)
+    let dataXml = await zip.file(dataSheetPath)?.async("text");
+    if (!dataXml) {
+      return NextResponse.json({ error: "Worksheet data not found in template" }, { status: 500 });
     }
-    ws["G6"] = { v: `${section.term} SY ${section.academicYear}`, t: "s" };
+
+    // Populate Header Metadata on Data Sheet
+    if (section.ownerProfessor?.displayName) {
+      dataXml = setCellText(dataXml, "G2", section.ownerProfessor.displayName, "147");
+    }
+    dataXml = setCellText(dataXml, "G6", `${section.term} SY ${section.academicYear}`, "147");
 
     const subjParts = section.subjectName.split(" - ");
     const code = subjParts.length > 1 ? subjParts[0] : "";
     const title = subjParts.length > 1 ? subjParts.slice(1).join(" - ") : section.subjectName;
 
-    ws["O2"] = { v: title, t: "s" };
-    ws["O4"] = { v: code, t: "s" };
-    ws["O6"] = { v: 3, t: "n" };
-    ws["R6"] = { v: section.sectionName || section.sectionCode, t: "s" };
+    dataXml = setCellText(dataXml, "O2", title, "147");
+    dataXml = setCellText(dataXml, "O4", code, "147");
+    dataXml = setCellValue(dataXml, "O6", 3, "147");
+    dataXml = setCellText(dataXml, "R6", section.sectionName || section.sectionCode, "151");
 
-    // 6. Map Grade Items and Assessment Columns
+    // 6. Map Assessment Columns
     const ALL_ASSESSMENT_COLS = [
-      "G", "H", "I", "J", "K", "L", "M", // CP Mid (Weeks 1-7)
-      "N", "O", "P", "Q", "R", "S", "T", // CP Fin (Weeks 8-13)
-      "U", "V", "W", "X", "Y", "Z", "AA", // EA Mid (Weeks 1-7)
-      "AB", "AC", "AD", "AE", "AF", "AG", "AH", // EA Fin (Weeks 8-13)
+      "G", "H", "I", "J", "K", "L", "M", // CP Mid
+      "N", "O", "P", "Q", "R", "S", "T", // CP Fin
+      "U", "V", "W", "X", "Y", "Z", "AA", // EA Mid
+      "AB", "AC", "AD", "AE", "AF", "AG", "AH", // EA Fin
       "AI", // MPT
       "AJ", // CPT
       "AK", // Bonus
@@ -157,7 +217,8 @@ export async function GET(request: Request, { params }: RouteParams) {
 
     // Pass 1: Match existing item names in row 11
     for (const col of ALL_ASSESSMENT_COLS) {
-      const colTitle = String(ws[`${col}11`]?.v || "").trim();
+      const match = dataXml.match(new RegExp(`<c r="${col}11"[^>]*><is><t>([^<]+)<\\/t><\\/is><\\/c>`));
+      const colTitle = match ? match[1].trim() : "";
       if (colTitle && colTitle !== "-") {
         const matched = section.gradeItems.find(
           (gi) => gi.name.trim().toLowerCase() === colTitle.toLowerCase()
@@ -178,8 +239,8 @@ export async function GET(request: Request, { params }: RouteParams) {
       }
       if (nextColIdx < ALL_ASSESSMENT_COLS.length) {
         const col = ALL_ASSESSMENT_COLS[nextColIdx];
-        ws[`${col}11`] = { v: gi.name, t: "s" };
-        ws[`${col}12`] = { v: gi.maxScore, t: "n" };
+        dataXml = setCellText(dataXml, `${col}11`, gi.name, "96");
+        dataXml = setCellValue(dataXml, `${col}12`, gi.maxScore, "97");
         itemColumnMap.set(gi.id, col);
         usedCols.add(col);
         nextColIdx++;
@@ -187,49 +248,75 @@ export async function GET(request: Request, { params }: RouteParams) {
     }
 
     // 7. Write All Enrolled Students (Starting at Row 13)
-    section.sectionStudents.forEach((secSt, idx) => {
+    for (let idx = 0; idx < section.sectionStudents.length; idx++) {
+      const secSt = section.sectionStudents[idx];
       const r = 13 + idx;
-      ws[`B${r}`] = { v: idx + 1, t: "n" };
-      ws[`C${r}`] = { v: secSt.student.studentNumber, t: "s" };
-      ws[`D${r}`] = { v: secSt.student.displayName, t: "s" };
 
-      // Write Assessment Scores
-      if (secSt.gradeRecords && secSt.gradeRecords.length > 0) {
-        for (const rec of secSt.gradeRecords) {
-          const col = itemColumnMap.get(rec.gradeItemId);
-          if (col && rec.score !== null && rec.score !== undefined) {
-            ws[`${col}${r}`] = { v: rec.score, t: "n" };
+      if (r <= 62) {
+        // Row exists pre-styled in template
+        dataXml = setCellValue(dataXml, `B${r}`, idx + 1, "6");
+        dataXml = setCellText(dataXml, `C${r}`, secSt.student.studentNumber, "61");
+        dataXml = setCellText(dataXml, `D${r}`, secSt.student.displayName, "62");
+
+        // Write Assessment Scores
+        if (secSt.gradeRecords && secSt.gradeRecords.length > 0) {
+          for (const rec of secSt.gradeRecords) {
+            const col = itemColumnMap.get(rec.gradeItemId);
+            if (col && rec.score !== null && rec.score !== undefined) {
+              dataXml = setCellValue(dataXml, `${col}${r}`, rec.score, "79");
+            }
           }
         }
+
+        // Final Grade
+        if (secSt.finalGrade) {
+          dataXml = setCellText(dataXml, `AO${r}`, secSt.finalGrade, "39");
+        }
+
+        // Remarks
+        if (secSt.remarks) {
+          dataXml = setCellText(dataXml, `AP${r}`, secSt.remarks, "106");
+        }
+      } else {
+        // Extra student rows beyond row 62: construct a full styled row before </sheetData>
+        let extraCells = `<c r="B${r}" s="6"><v>${idx + 1}</v></c><c r="C${r}" s="61" t="inlineStr"><is><t>${escapeXml(secSt.student.studentNumber)}</t></is></c><c r="D${r}" s="62" t="inlineStr"><is><t>${escapeXml(secSt.student.displayName)}</t></is></c>`;
+
+        if (secSt.gradeRecords && secSt.gradeRecords.length > 0) {
+          for (const rec of secSt.gradeRecords) {
+            const col = itemColumnMap.get(rec.gradeItemId);
+            if (col && rec.score !== null && rec.score !== undefined) {
+              extraCells += `<c r="${col}${r}" s="79"><v>${rec.score}</v></c>`;
+            }
+          }
+        }
+
+        if (secSt.finalGrade) {
+          extraCells += `<c r="AO${r}" s="39" t="inlineStr"><is><t>${escapeXml(secSt.finalGrade)}</t></is></c>`;
+        }
+        if (secSt.remarks) {
+          extraCells += `<c r="AP${r}" s="106" t="inlineStr"><is><t>${escapeXml(secSt.remarks)}</t></is></c>`;
+        }
+
+        const newRowXml = `<row r="${r}" spans="2:42" s="5" customFormat="1" ht="23.25" customHeight="1">${extraCells}</row>`;
+        dataXml = dataXml.replace("</sheetData>", `${newRowXml}</sheetData>`);
       }
+    }
 
-      // Write Final Grade / Equivalent
-      if (secSt.finalGrade) {
-        ws[`AO${r}`] = { v: secSt.finalGrade, t: "s" };
-      }
+    zip.file(dataSheetPath, dataXml);
 
-      // Write Remarks
-      if (secSt.remarks) {
-        ws[`AP${r}`] = { v: secSt.remarks, t: "s" };
-      }
-    });
-
-    // 8. Expand worksheet range to cover all written student rows
-    const maxRow = Math.max(62, 13 + section.sectionStudents.length + 2);
-    ws["!ref"] = `B1:AP${maxRow}`;
-
-    // 9. Write workbook to output buffer
-    const outputBuffer = XLSX.write(wb, {
-      type: "buffer",
-      bookType: "xlsx",
-      compression: true,
+    // 8. Generate the finalized buffer directly from the updated zip
+    // This guarantees 100% preservation of drawings, logos, images, themes, and styles
+    const outputBuffer = await zip.generateAsync({
+      type: "nodebuffer",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 },
     });
 
     const safeFilename = originalFileName
       ? (originalFileName.toLowerCase().endsWith(".xlsx") ? originalFileName : `${originalFileName}.xlsx`)
       : `${section.sectionCode}_Class_Record.xlsx`;
 
-    return new NextResponse(outputBuffer, {
+    return new NextResponse(outputBuffer as any, {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename="${safeFilename}"`,
